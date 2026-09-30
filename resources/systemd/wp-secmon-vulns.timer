@@ -1,0 +1,11 @@
+[Unit]
+Description=wp-secmon: known WordPress vulnerabilities (daily)
+
+[Timer]
+OnCalendar=*-*-* 06:15:00
+RandomizedDelaySec=30min
+Persistent=true
+Unit=wp-secmon@vulns.service
+
+[Install]
+WantedBy=timers.target

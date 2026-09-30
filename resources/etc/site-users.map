@@ -1,0 +1,10 @@
+# wp-secmon: account used to check a site, when it is not the owner of the
+# WordPress directory.
+#
+#   <wordpress root>   <account>
+#
+# Use "-" as the account to never check a site. The account can never be root.
+# Typical LEMP case: code owned by root, PHP-FPM pool running as www-data.
+#
+# /var/www/example.com/public     www-data
+# /var/www/staging.example.com    -

@@ -1,0 +1,11 @@
+[Unit]
+Description=wp-secmon: find WordPress installs (daily)
+
+[Timer]
+OnCalendar=*-*-* 02:00:00
+RandomizedDelaySec=30min
+Persistent=true
+Unit=wp-secmon@discover.service
+
+[Install]
+WantedBy=timers.target

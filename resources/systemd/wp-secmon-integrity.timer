@@ -1,0 +1,11 @@
+[Unit]
+Description=wp-secmon: WordPress file and settings changes (hourly)
+
+[Timer]
+OnCalendar=*-*-* *:35:00
+RandomizedDelaySec=5min
+Persistent=true
+Unit=wp-secmon@integrity.service
+
+[Install]
+WantedBy=timers.target
