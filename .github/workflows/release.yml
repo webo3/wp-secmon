@@ -25,18 +25,17 @@ jobs:
         with:
           php-version: ${{ matrix.php }}
           coverage: none
-      - run: php tests/unit.php
+      - run: make test
 
   integration:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
       matrix:
-        dockerfile: [Dockerfile, Dockerfile.el8]
+        target: [e2e-debian, e2e-el8]
     steps:
       - uses: actions/checkout@v5
-      - run: docker build -t wp-secmon-test -f tests/integration/${{ matrix.dockerfile }} .
-      - run: docker run --rm wp-secmon-test
+      - run: make ${{ matrix.target }}
 
   release:
     needs: [unit, integration]
@@ -60,7 +59,7 @@ jobs:
             exit 1
           fi
 
-      - run: php -d phar.readonly=0 build.php
+      - run: make build
 
       - name: Smoke test
         run: |

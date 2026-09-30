@@ -58,8 +58,18 @@ final class Context
     /** File scan of a site (FileScanner), run as the site owner through `wp-secmon __scan-files`. */
     public function scanFiles(Site $site, array $paths): WpResult
     {
-        $cmd = [PHP_BINARY, '-d', 'open_basedir=', '-d', 'display_errors=stderr', Util::entry(), '__scan-files',
-            (string) json_encode($paths, JSON_UNESCAPED_SLASHES)];
+        return $this->helper($site, ['__scan-files', (string) json_encode($paths, JSON_UNESCAPED_SLASHES)]);
+    }
+
+    /** One file of a site and its first $max bytes (FileScanner::read), read as the site owner through `wp-secmon __read-file`. */
+    public function readFile(Site $site, string $path, int $max): WpResult
+    {
+        return $this->helper($site, ['__read-file', $path, (string) $max]);
+    }
+
+    private function helper(Site $site, array $args): WpResult
+    {
+        $cmd = array_merge([PHP_BINARY, '-d', 'open_basedir=', '-d', 'display_errors=stderr', Util::entry()], $args);
         $base = sprintf('%s/helper-%s-%d', $this->tmp, $site->id, ++$this->seq);
         $code = $this->runAs->run($site->user, $cmd, "$base.out", "$base.err", $this->cfg->int('wp_timeout'), $site->root);
         return WpResult::fromFiles($code, "$base.out", "$base.err", $this->runAs->maxOutput());

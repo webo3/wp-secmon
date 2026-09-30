@@ -13,17 +13,22 @@ const MAIL = '/tmp/mail.txt';
 const ALICE = '/home/alice/public_html';
 const BOB = '/home/bob/public_html/blog';
 const ROOTSITE = '/var/www/rootsite';
+// The version being tested, as set in src/bootstrap.php.
+define('VERSION', preg_match("/const VERSION = '([^']+)'/", (string) file_get_contents('/src/src/bootstrap.php'), $m) ? $m[1] : '?');
 
 $passed = 0;
 $failed = 0;
 
-function sh(array $cmd, bool $must = true): array
+function sh(array $cmd, bool $must = true, string $input = ''): array
 {
+    $in = tempnam('/tmp', 'i');
     $out = tempnam('/tmp', 'o');
     $err = tempnam('/tmp', 'e');
-    $p = proc_open($cmd, [0 => ['file', '/dev/null', 'r'], 1 => ['file', $out, 'w'], 2 => ['file', $err, 'w']], $pipes);
+    file_put_contents($in, $input);
+    $p = proc_open($cmd, [0 => ['file', $in, 'r'], 1 => ['file', $out, 'w'], 2 => ['file', $err, 'w']], $pipes);
     $code = proc_close($p);
     $r = [$code, (string) file_get_contents($out), (string) file_get_contents($err)];
+    unlink($in);
     unlink($out);
     unlink($err);
     if ($must && $code !== 0) {
@@ -72,11 +77,17 @@ function sessionId(): string
 /** Run wp-secmon; returns [exit code, stdout+stderr, mailed report, detailed report (last-report-*.txt)]. */
 function wpsecmon(string ...$args): array
 {
+    return wpsecmonWithInput('', ...$args);
+}
+
+/** wpsecmon() with $input on stdin (answers to review). */
+function wpsecmonWithInput(string $input, string ...$args): array
+{
     @unlink(MAIL);
     foreach (glob('/var/log/wp-secmon/last-report-*.txt') ?: [] as $file) {
         unlink($file);
     }
-    [$code, $out, $err] = sh(array_merge(['wp-secmon'], $args), false);
+    [$code, $out, $err] = sh(array_merge(['wp-secmon'], $args), false, $input);
     $mail = (string) @file_get_contents(MAIL);
     $details = '';
     foreach (glob('/var/log/wp-secmon/last-report-*.txt') ?: [] as $file) {
@@ -179,14 +190,20 @@ foreach ($sites as [$path, $user, $db, $url]) {
 }
 // Bob keeps wp-config.php one level above WordPress (supported by WordPress).
 rename(BOB . '/wp-config.php', dirname(BOB) . '/wp-config.php');
-// Alice runs a vulnerable Contact Form 7 and has harmless PHP in uploads: a "Silence is golden" stub
-// and a compiled Twig template (WPML cache).
+// Alice runs a vulnerable Contact Form 7 and has harmless PHP in uploads: a "Silence is golden" stub,
+// a compiled Twig template (WPML cache), Sucuri data files and dompdf font metrics.
 wp('alice', ALICE, ['plugin', 'install', 'contact-form-7', '--version=5.3.1', '--activate', '--quiet']);
-sh(['runuser', '-u', 'alice', '--', 'mkdir', '-p', ALICE . '/wp-content/uploads/2026/09', ALICE . '/wp-content/uploads/cache/wpml/twig/3f']);
+sh(['runuser', '-u', 'alice', '--', 'mkdir', '-p', ALICE . '/wp-content/uploads/2026/09', ALICE . '/wp-content/uploads/cache/wpml/twig/3f',
+    ALICE . '/wp-content/uploads/sucuri', ALICE . '/wp-content/uploads/wpo_wcpdf_0123/fonts']);
 put(ALICE . '/wp-content/uploads/2026/index.php', "<?php\n// Silence is golden.\n", 'alice');
 put(ALICE . '/wp-content/uploads/cache/wpml/twig/3f/3f' . substr(hash('sha256', 'tpl'), 2) . '.php',
     "<?php\n\nnamespace WPML\\Core;\n\nuse \\WPML\\Core\\Twig\\Template;\n\n/* slot.twig */\n"
     . 'class __TwigTemplate_' . hash('sha256', 'slot') . " extends \\WPML\\Core\\Twig\\Template\n{\n}\n", 'alice');
+put(ALICE . '/wp-content/uploads/sucuri/sucuri-lastlogins.php', "<?php exit(0); ?>\n", 'alice');
+put(ALICE . '/wp-content/uploads/sucuri/sucuri-integrity.php', "<?php\n// datastore=integrity;\n// created_on=1790000000;\nexit(0);\n?>\n"
+    . "wp-config.php:{\"checksum\":\"abc\"}\n", 'alice');
+put(ALICE . '/wp-content/uploads/wpo_wcpdf_0123/fonts/OpenSans-Normal.ufm.php', '<?php return '
+    . var_export(['FontName' => 'OpenSans', 'isUnicode' => true, 'C' => [32 => 260, 33 => 267], 'Descender' => -240.0], true) . ';', 'alice');
 put('/usr/local/bin/fake-sendmail', "#!/usr/bin/php\n<?php file_put_contents('" . MAIL . "', stream_get_contents(STDIN), FILE_APPEND);\n", 'root');
 chmod('/usr/local/bin/fake-sendmail', 0755);
 
@@ -204,7 +221,7 @@ $bin = '/usr/local/sbin/wp-secmon';
 $st = stat($bin);
 expect('installed the phar as ' . $bin, is_file($bin) && hash_file('sha256', $bin) === hash_file('sha256', '/root/wp-secmon.phar'));
 expect('installed program is root-owned and not writable by others', $st['uid'] === 0 && ($st['mode'] & 0777) === 0755);
-expect('installed program runs', trim(sh([$bin, '--version'])[1]) === 'wp-secmon 0.1.0');
+expect('installed program runs', trim(sh([$bin, '--version'])[1]) === 'wp-secmon ' . VERSION);
 [$code, $out] = sh(['php', '/root/wp-secmon.phar', 'install']);
 expect('reinstall keeps the configuration', has($out, 'kept /etc/wp-secmon/wp-secmon.ini') && has((string) file_get_contents('/etc/wp-secmon/wp-secmon.ini'), 'fake-sendmail'), $out);
 expect('reinstall keeps WP-CLI', has($out, 'WP-CLI: /usr/local/bin/wp') && !has($out, '(downloaded)') && !has($out, 'Next steps'), $out);
@@ -240,7 +257,7 @@ expect('printed summary', has($out, 'What to do') && has($out, 'Details: /var/lo
 expect('no check failed', !has($out . $details, 'Check failed'), $out . $details);
 expect('clean installs match the official checksums', !has($details, 'checksums:'), $details);
 expect('no account alerts on the baseline run', !has($details, 'account'), $details);
-expect('silence-is-golden stub and Twig cache not reported', !has($details, 'executable file'), $details);
+expect('harmless PHP in uploads not reported (stub, Twig cache, Sucuri data, dompdf fonts)', !has($details, 'executable file'), $details);
 
 step('second run changes nothing and repeats nothing');
 $before = snapshot();
@@ -276,7 +293,8 @@ put(ALICE . '/wp-includes/functions.php', "\n// injected\n", 'alice', true);
 put(ALICE . '/wp-admin/shell.php', "<?php system(\$_GET['c']);\n", 'alice');
 put(ALICE . '/radio.php', "<?php eval(\$_POST['x']);\n", 'alice');
 put(ALICE . '/wp-config.php', "\n// tampered\n", 'alice', true);
-put(ALICE . '/wp-content/uploads/2026/09/cmd.php', "<?php passthru(\$_GET['c']);\n", 'alice');
+// A web shell dressed as a Sucuri data file: its exit comes too late.
+put(ALICE . '/wp-content/uploads/sucuri/sucuri-cmd.php', "<?php passthru(\$_GET['c']); exit(0); ?>\n", 'alice');
 put(ALICE . '/wp-content/uploads/2026/09/photo.php.jpg', "<?php phpinfo();\n", 'alice');
 put(ALICE . '/wp-content/plugins/contact-form-7/wp-contact-form-7.php', "\n// backdoor\n", 'alice', true);
 // Last: a must-use plugin that hides the attacker account and leaves a trace whenever it runs.
@@ -318,6 +336,7 @@ foreach ([
     '[CRITICAL] integrity: Must-use plugins (loaded on every request, cannot be disabled): 1 added',
     '[CRITICAL] integrity: 2 executable file(s) in the uploads directory',
     'wp-content/uploads/2026/09/photo.php.jpg',
+    'wp-content/uploads/sucuri/sucuri-cmd.php',
 ] as $needle) {
     expect($needle, has($integrity, $needle), $integrity);
 }
@@ -356,6 +375,47 @@ $html = mailHtml($mail);
 expect('report in French', has($out, 'Que faire') && has($out, '2 fichiers exécutables dans le dossier uploads'), $out);
 expect('e-mail in French', has($mail, 'Subject: [wp-secmon]') && has($html, '<html lang="fr">')
     && has($html, 'Tout le monde peut s’inscrire et obtenir le rôle « administrator »'), $html);
+
+// ---------------------------------------------------------------------------
+step('review files in uploads');
+// A file alice cannot read: the review reads files as the site owner, never as root.
+$secret = ALICE . '/wp-content/uploads/2026/09/secret.php';
+put($secret, "<?php // root only\n", 'root');
+chmod($secret, 0600);
+// 30 lines: the first 15 are shown, "c" shows the rest.
+$photo = ALICE . '/wp-content/uploads/2026/09/photo.php.jpg';
+put($photo, "<?php phpinfo();\n" . str_repeat("// padding\n", 28) . "// last line\n", 'alice');
+wpsecmon('integrity', '--no-mail', '--site', ALICE);
+$accepted = '/var/lib/wp-secmon/sites/' . substr(hash('sha256', ALICE), 0, 12) . '/uploads-accepted.json';
+$before = snapshot();
+// photo.php.jpg: cat, then yes. secret.php: cannot be read, so no question. sucuri-cmd.php: no.
+[$code, $out] = wpsecmonWithInput("c\ny\nn\n", 'review', '--site', ALICE);
+$after = snapshot();
+echo $out;
+expect('review lists the files of the last check', $code === 0 && has($out, ALICE . ' (read as alice): 3 files to review'), $out);
+expect('review shows the first lines', has($out, "  | <?php passthru(\$_GET['c']);") && has($out, '  | <?php phpinfo();')
+    && has($out, '... 15 more lines (c: cat the whole file)'), $out);
+expect('c shows the whole file', has($out, '  | // last line'), $out);
+expect('review reads files as the site owner', has($out, "'alice' cannot read it") && !has($out, 'root only'), $out);
+$list = json_decode((string) @file_get_contents($accepted), true) ?? [];
+expect('review records the sha256 of the accepted file', array_keys($list) === ['wp-content/uploads/2026/09/photo.php.jpg']
+    && $list['wp-content/uploads/2026/09/photo.php.jpg']['hash'] === hash_file('sha256', $photo), (string) json_encode($list));
+expect('database and files untouched by the review', ($d = sameSnapshot($before, $after)) === '', $d);
+[, , , $details] = wpsecmon('integrity', '--no-mail', '--site', ALICE);
+expect('accepted file no longer reported', has($details, '2 executable file(s) in the uploads directory') && has($details, 'sucuri-cmd.php')
+    && !has($details, 'photo.php.jpg') && has($details, 'wp-secmon review --site ' . ALICE), $details);
+[, $out] = wpsecmonWithInput('', 'review', '--site', ALICE);
+[, $all] = wpsecmonWithInput('', 'review', '--accepted', '--site', ALICE);
+expect('review skips accepted files unless --accepted', has($out, '2 files to review') && has($all, '3 files to review'), $out . $all);
+put($photo, "<?php system(\$_GET['c']);\n", 'alice');
+[, , , $details] = wpsecmon('integrity', '--no-mail', '--site', ALICE);
+expect('accepted file reported again once changed', has($details, '3 executable file(s) in the uploads directory')
+    && (bool) preg_match('#photo\.php\.jpg \(\d+ bytes\), changed since it was accepted#', $details), $details);
+// photo.php.jpg: no longer accepted. sucuri-cmd.php: skip.
+[, $out] = wpsecmonWithInput("n\n\n", 'review', '--site', ALICE);
+expect('acceptance withdrawn', has($out, 'changed since') && has($out, 'no longer accepted') && has($out, '0 files accepted, 1 no longer accepted')
+    && json_decode((string) file_get_contents($accepted), true) === [], $out);
+unlink($secret);
 
 // ---------------------------------------------------------------------------
 step('site-users.map');
@@ -435,15 +495,15 @@ $version = static function () use ($bin): string {
 };
 
 [$code, $out] = wpsecmon('update', '--check');
-expect('update --check sees the new release', $code === 0 && has($out, 'wp-secmon 99.0.0 is available (this is 0.1.0)'), $out);
+expect('update --check sees the new release', $code === 0 && has($out, 'wp-secmon 99.0.0 is available (this is ' . VERSION . ')'), $out);
 $lock = fopen('/var/lib/wp-secmon/locks/vulns.lock', 'c');
 flock($lock, LOCK_EX);
 [$code, $out] = wpsecmon('update');
 flock($lock, LOCK_UN);
 fclose($lock);
-expect('update waits until no check is running', $code !== 0 && has($out, "a 'vulns' run is in progress") && $version() === 'wp-secmon 0.1.0', $out);
+expect('update waits until no check is running', $code !== 0 && has($out, "a 'vulns' run is in progress") && $version() === 'wp-secmon ' . VERSION, $out);
 [$code, $out] = wpsecmon('update');
-expect('update installs the new release', $code === 0 && has($out, 'wp-secmon updated from 0.1.0 to 99.0.0') && $version() === 'wp-secmon 99.0.0', $out);
+expect('update installs the new release', $code === 0 && has($out, 'wp-secmon updated from ' . VERSION . ' to 99.0.0') && $version() === 'wp-secmon 99.0.0', $out);
 $st = stat($bin);
 expect('updated program is root-owned and not writable by others', $st['uid'] === 0 && ($st['mode'] & 0777) === 0755);
 expect('update keeps the configuration', has($out, 'kept /etc/wp-secmon/wp-secmon.ini') && has((string) file_get_contents('/etc/wp-secmon/wp-secmon.ini'), 'fake-sendmail'), $out);

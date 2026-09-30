@@ -29,6 +29,7 @@ final class Cli
     private bool $enable = true;
     private bool $purge = false;
     private bool $checkOnly = false;
+    private bool $withAccepted = false;
 
     private static function usage(): string
     {
@@ -49,6 +50,10 @@ Commands:
   sites       List the discovered sites and the account each one is checked
               as (runs discovery first when there is no site list yet)
   status      Show open (unresolved) alerts
+  review      Go through the executable files found in uploads and accept
+              the harmless ones: an accepted file is no longer reported,
+              until its content changes (use --site for some sites only)
+                --accepted   Also go through the files accepted before
   reset       Forget open alerts and cached vulnerability data, so the next
               run reports every problem again (baselines are kept; use
               --site to reset only some sites)
@@ -90,6 +95,12 @@ TXT);
                 return 2;
             }
             fwrite(STDOUT, json_encode(FileScanner::scan($in), JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE) . "\n");
+            return 0;
+        }
+        // Internal: one file read as a site owner for `wp-secmon review` (see Context::readFile).
+        if (($argv[1] ?? '') === '__read-file') {
+            fwrite(STDOUT, json_encode(FileScanner::read((string) ($argv[2] ?? ''), max(1, (int) ($argv[3] ?? 65536))),
+                JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE) . "\n");
             return 0;
         }
 
@@ -150,6 +161,8 @@ TXT);
                 $this->purge = true;
             } elseif ($a === '--check') {
                 $this->checkOnly = true;
+            } elseif ($a === '--accepted') {
+                $this->withAccepted = true;
             } elseif ($a !== '' && $a[0] === '-') {
                 throw new \InvalidArgumentException(I18n::t('unknown option %s (see --help)', $a));
             } elseif ($command === null) {
@@ -187,6 +200,8 @@ TXT);
                 return $this->sites();
             case 'status':
                 return $this->status();
+            case 'review':
+                return $this->review();
             case 'reset':
                 return $this->reset();
             case 'doctor':
@@ -375,6 +390,32 @@ TXT);
         }
         self::table([I18n::t('SEVERITY'), I18n::t('SINCE'), I18n::t('CHECK'), I18n::t('SITE'), I18n::t('ALERT')], $rows);
         return 0;
+    }
+
+    /** Go through the executable files found in uploads and record the ones the admin accepts (see Review). */
+    private function review(): int
+    {
+        $this->init();
+        $reg = (new Sites($this->cfg, new Alerts($this->cfg)))->registry();
+        if ($reg === null) {
+            throw new \RuntimeException(I18n::t("no site list yet: run 'wp-secmon discover'"));
+        }
+        $sites = [];
+        foreach ($reg['sites'] ?? [] as $a) {
+            $sites[$a['root']] = Site::fromArray($a);
+        }
+        if ($this->only) {
+            $picked = [];
+            foreach ($this->only as $path) {
+                $root = Sites::root($path);
+                if (!isset($sites[$root])) {
+                    throw new \RuntimeException(I18n::t("%s is not in the site list; run 'wp-secmon discover' to search for new sites", $path));
+                }
+                $picked[$root] = $sites[$root];
+            }
+            $sites = $picked;
+        }
+        return (new Review(new Context($this->cfg, new Alerts($this->cfg), $this->tmp), STDIN))->run(array_values($sites), $this->withAccepted);
     }
 
     /** Forget open alerts and cached vulnerability data, so the next run reports every problem again. */

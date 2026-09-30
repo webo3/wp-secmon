@@ -10,7 +10,7 @@ declare(strict_types=1);
 
 namespace WpSecMon;
 
-const VERSION = '0.1.0';
+const VERSION = '0.2.0';
 
 spl_autoload_register(static function (string $class): void {
     $prefix = __NAMESPACE__ . '\\';

@@ -16,10 +16,15 @@ use WpSecMon\Util;
  * - plugins and themes installed, removed, activated or deactivated
  * - wp-config.php, .htaccess/.user.ini/php.ini, non-core PHP files in the site
  *   root and in wp-content, drop-ins and must-use plugins (sha256 baseline)
- * - executable files (PHP...) in the uploads directory
+ * - executable files (PHP...) in the uploads directory, except those accepted
+ *   with `wp-secmon review` and unchanged since (see Review)
  */
 final class IntegrityCheck extends Check
 {
+    /** In the site state: executable files found in uploads by the last check, and those accepted. */
+    public const UPLOADS_FOUND = 'uploads-exec.json';
+    public const UPLOADS_ACCEPTED = 'uploads-accepted.json';
+
     /** Root files covered by `wp core verify-checksums`. */
     private const CORE_ROOT_FILES = [
         'index.php', 'wp-activate.php', 'wp-blog-header.php', 'wp-comments-post.php', 'wp-config-sample.php',
@@ -251,7 +256,7 @@ final class IntegrityCheck extends Check
             Log::debug("{$site->root}: " . Util::oneLine((string) $e));
         }
 
-        [$manifest, $exec] = $this->classify($site, $scan['entries'] ?? [], $content, $uploads);
+        [$manifest, $found] = $this->classify($site, $scan['entries'] ?? []);
 
         $old = Util::readJson("$dir/files.json");
         if ($old === null) {
@@ -263,11 +268,22 @@ final class IntegrityCheck extends Check
         }
         Util::writeJson("$dir/files.json", $manifest);
 
+        // What `wp-secmon review` goes through.
+        Util::writeJson("$dir/" . self::UPLOADS_FOUND, ['truncated' => !empty($scan['truncated']), 'files' => $found]);
+        $exec = [];
+        foreach (self::pendingUploads($found, Util::readJson("$dir/" . self::UPLOADS_ACCEPTED) ?? []) as $rel => $changed) {
+            $f = $found[$rel];
+            $line = strpos($f['hash'], 'symlink -> ') === 0 ? "$rel ({$f['hash']})"
+                : I18n::n($f['size'], '%s (%d bytes)', '%s (%d bytes)', $rel, $f['size']);
+            $exec[] = $changed ? I18n::t('%s, changed since it was accepted', $line) : $line;
+        }
+
         if ($exec) {
             $lines = Util::listBlock('', $exec, 50);
             if (!empty($scan['truncated'])) {
                 $lines[] = '    ' . I18n::t('(scan stopped after 2000 matches)');
             }
+            $lines[] = '    ' . I18n::t('Once checked, accept the harmless ones with: wp-secmon review --site %s', $site->root);
             $alerts->alert('critical', 'uploads-exec',
                 I18n::n(count($exec), '%d executable file(s) in the uploads directory (%s)', '%d executable file(s) in the uploads directory (%s)',
                     count($exec), $this->rel($site, $uploads)), $lines,
@@ -298,18 +314,19 @@ final class IntegrityCheck extends Check
         return strpos($path, $parent . '/') === 0 ? '../' . substr($path, strlen($parent) + 1) : $path;
     }
 
-    /** @return array{0: array<string, array{0: string, 1: string}>, 1: string[]} [manifest rel => [category, hash], uploads executables] */
-    private function classify(Site $site, array $entries, string $content, string $uploads): array
+    /**
+     * @return array{0: array<string, array{0: string, 1: string}>, 1: array<string, array{path: string, hash: string, size: int}>}
+     *         [manifest rel => [category, hash], executables in uploads rel => file]
+     */
+    private function classify(Site $site, array $entries): array
     {
         $manifest = [];
         $exec = [];
-        $allow = $this->ctx->cfg->list('uploads_exec_allow');
         foreach ($entries as $e) {
             $path = (string) ($e['path'] ?? '');
             $rel = $this->rel($site, $path);
             $base = basename($path);
-            $link = $e['link'] ?? null;
-            $hash = $link !== null ? 'symlink -> ' . Util::oneLine((string) $link) : (string) ($e['sha256'] ?? '');
+            $hash = self::fileHash($e);
             switch ($e['area'] ?? '') {
                 case 'config':
                     $cat = 'config';
@@ -334,9 +351,8 @@ final class IntegrityCheck extends Check
                         $cat = 'uploads-config';
                         break;
                     }
-                    $inUploads = substr($path, strlen($uploads) + 1);
-                    if (empty($e['benign']) && !Util::matchAny($inUploads, $allow)) {
-                        $exec[] = $link !== null ? "$rel ($hash)" : I18n::n((int) ($e['size'] ?? 0), '%s (%d bytes)', '%s (%d bytes)', $rel, (int) ($e['size'] ?? 0));
+                    if (empty($e['benign'])) {
+                        $exec[$rel] = ['path' => $path, 'hash' => $hash, 'size' => (int) ($e['size'] ?? 0)];
                     }
                     continue 2;
                 default:
@@ -345,8 +361,33 @@ final class IntegrityCheck extends Check
             $manifest[$rel] = [$cat, $hash];
         }
         ksort($manifest);
-        sort($exec);
+        ksort($exec);
         return [$manifest, $exec];
+    }
+
+    /** What a file is compared by: its sha256, or the target of a symbolic link (FileScanner entry or read). */
+    public static function fileHash(array $e): string
+    {
+        $link = $e['link'] ?? null;
+        return $link !== null ? 'symlink -> ' . Util::oneLine((string) $link) : (string) ($e['sha256'] ?? '');
+    }
+
+    /**
+     * Executable files in uploads to report: not accepted with `wp-secmon review`, or changed since.
+     * @param array<string, array{hash: string}> $found rel => file (see classify)
+     * @param array<string, array{hash: string}> $accepted rel => acceptance (see Review)
+     * @return array<string, bool> rel => whether it changed since it was accepted
+     */
+    public static function pendingUploads(array $found, array $accepted): array
+    {
+        $out = [];
+        foreach ($found as $rel => $f) {
+            $was = $accepted[$rel]['hash'] ?? null;
+            if ($was !== $f['hash']) {
+                $out[$rel] = $was !== null;
+            }
+        }
+        return $out;
     }
 
     public static function diffFiles(array $old, array $new): array

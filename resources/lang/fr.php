@@ -239,6 +239,8 @@ return [
         '%d fichiers exécutables dans le dossier uploads (%s)',
     ],
     '%s (%d bytes)' => ['%s (%d octet)', '%s (%d octets)'],
+    '%s, changed since it was accepted' => '%s, modifié depuis son acceptation',
+    'Once checked, accept the harmless ones with: wp-secmon review --site %s' => 'Une fois vérifiés, acceptez ceux qui sont sans danger avec : wp-secmon review --site %s',
     'Server configuration in the site root (.htaccess, .user.ini, php.ini)' => 'Configuration du serveur à la racine du site (.htaccess, .user.ini, php.ini)',
     'Non-core PHP files in the site root' => 'Fichiers PHP hors du cœur à la racine du site',
     'PHP or configuration files directly in wp-content' => 'Fichiers PHP ou de configuration directement dans wp-content',
@@ -371,6 +373,10 @@ Commands:
   sites       List the discovered sites and the account each one is checked
               as (runs discovery first when there is no site list yet)
   status      Show open (unresolved) alerts
+  review      Go through the executable files found in uploads and accept
+              the harmless ones: an accepted file is no longer reported,
+              until its content changes (use --site for some sites only)
+                --accepted   Also go through the files accepted before
   reset       Forget open alerts and cached vulnerability data, so the next
               run reports every problem again (baselines are kept; use
               --site to reset only some sites)
@@ -419,6 +425,11 @@ Commandes :
   sites       Lister les sites découverts et le compte utilisé pour chacun
               (lance d’abord la découverte s’il n’y a pas encore de liste)
   status      Afficher les alertes ouvertes (non résolues)
+  review      Examiner les fichiers exécutables trouvés dans uploads et
+              accepter ceux qui sont sans danger : un fichier accepté n’est
+              plus signalé tant que son contenu ne change pas (--site pour
+              certains sites seulement)
+                --accepted    Examiner aussi les fichiers déjà acceptés
   reset       Oublier les alertes ouvertes et les données de vulnérabilités
               en cache, pour que la prochaine exécution signale de nouveau
               chaque problème (les états de référence sont conservés;
@@ -488,6 +499,34 @@ Options :
     ],
     "Run 'wp-secmon all' to report every problem again." => 'Lancez « wp-secmon all » pour signaler de nouveau chaque problème.',
 
+    // review
+    'Nothing to review: the last integrity check found no executable file to accept in uploads.'
+        => 'Rien à examiner : la dernière vérification d’intégrité n’a trouvé aucun fichier exécutable à accepter dans uploads.',
+    '%s (read as %s): %d file to review' => ['%s (lu en tant que %s) : %d fichier à examiner', '%s (lu en tant que %s) : %d fichiers à examiner'],
+    'Accept this file? [y]es, [n]o, [a]ll of this folder, [c]at the whole file, [q]uit, Enter: skip'
+        => 'Accepter ce fichier ? [y] oui, [n] non, [a] tout ce dossier, [c] afficher tout le fichier, [q] quitter, Entrée : passer',
+    'it changed since it was shown; its current version:' => 'il a changé depuis son affichage; sa version actuelle :',
+    'accepted' => 'accepté',
+    'accepted with the rest of its folder' => 'accepté avec le reste de son dossier',
+    'no longer accepted: it will be reported again' => 'n’est plus accepté : il sera de nouveau signalé',
+    'cannot read it: %s' => 'lecture impossible : %s',
+    'no longer there' => 'n’existe plus',
+    'it changed while being read: review it again' => 'modifié pendant la lecture : examinez-le de nouveau',
+    "'%s' cannot read it" => '« %s » ne peut pas le lire',
+    'symbolic link to %s' => 'lien symbolique vers %s',
+    '%d byte' => ['%d octet', '%d octets'],
+    '%s, modified %s' => '%s, modifié le %s',
+    'accepted on %s' => 'accepté le %s',
+    'accepted on %s, changed since' => 'accepté le %s, modifié depuis',
+    '... %d more line (c: cat the whole file)' => ['... %d ligne de plus (c : afficher tout le fichier)', '... %d lignes de plus (c : afficher tout le fichier)'],
+    '... (c: cat the whole file)' => '... (c : afficher tout le fichier)',
+    '... only the first %d MB are shown' => '... seuls les %d premiers Mo sont affichés',
+    '(binary content, not shown)' => '(contenu binaire, non affiché)',
+    '%d file accepted' => ['%d fichier accepté', '%d fichiers acceptés'],
+    '%d no longer accepted' => ['%d n’est plus accepté', '%d ne sont plus acceptés'],
+    "The next integrity check takes this into account (hourly, or now with 'wp-secmon integrity')."
+        => 'La prochaine vérification d’intégrité en tient compte (toutes les heures, ou maintenant avec « wp-secmon integrity »).',
+
     // doctor
     'WP-CLI not found at %s (set wp_cli)' => 'WP-CLI introuvable à %s (réglez wp_cli)',
     '%s is not executable (chmod 755 it or set wp_php)' => '%s n’est pas exécutable (faites chmod 755 ou réglez wp_php)',
@@ -499,6 +538,9 @@ Options :
     'json extension' => 'extension json',
     'posix extension' => 'extension posix',
     'posix extension missing (install php-process / php-posix); falling back to getent' => 'extension posix absente (installez php-process / php-posix); getent est utilisé à la place',
+    'tokenizer extension' => 'extension tokenizer',
+    'tokenizer extension missing: harmless PHP data files in uploads (Sucuri, dompdf fonts) are reported'
+        => 'extension tokenizer absente : les fichiers de données PHP sans danger dans uploads (Sucuri, polices dompdf) sont signalés',
     'HTTPS client (curl or openssl extension)' => 'client HTTPS (extension curl ou openssl)',
     'open_basedir is set for the CLI; run with -d open_basedir=' => 'open_basedir est défini pour le CLI; lancez avec -d open_basedir=',
     'no open_basedir restriction' => 'aucune restriction open_basedir',

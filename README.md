@@ -23,8 +23,8 @@ It works on cPanel/CloudLinux/Imunify360 servers and on plain LAMP/LEMP servers.
 
 | Check | Timer | Detects |
 |---|---|---|
-| `users` | hourly | Accounts created, deleted or renamed, privileges granted or removed, e-mail changes on privileged accounts. Based on `wp user list`, normalized and checksummed; the diff runs only when the checksum changes. |
-| `integrity` | hourly | Changes to site URL, admin e-mail, registration and default role. Open registration with a powerful default role. Plugins and themes installed, removed, activated or deactivated. Changes to `wp-config.php`, `.htaccess`/`.user.ini`/`php.ini`, non-core PHP files in the site root and in `wp-content`, drop-ins and must-use plugins (sha256 baseline). Executable files in uploads (`.php`, `.phtml`, `x.php.jpg`...), except "Silence is golden" stubs and compiled Twig templates (WPML cache). |
+| `users` | hourly | Administrator accounts (`privileged_roles`) created, deleted, renamed or modified, e-mail changes on them, and accounts granted or losing privileges. Other accounts are ignored unless `users_alert_new = all`. Based on `wp user list`, normalized and checksummed; the diff runs only when the checksum changes. |
+| `integrity` | hourly | Changes to site URL, admin e-mail, registration and default role. Open registration with a powerful default role. Plugins and themes installed, removed, activated or deactivated. Changes to `wp-config.php`, `.htaccess`/`.user.ini`/`php.ini`, non-core PHP files in the site root and in `wp-content`, drop-ins and must-use plugins (sha256 baseline). Executable files in uploads (`.php`, `.phtml`, `x.php.jpg`...), except harmless PHP recognized by its content (see below) and files accepted with `wp-secmon review`. |
 | `checksums` | daily | `wp core verify-checksums` and `wp plugin verify-checksums --all`. Reports modified core files, extra files in `wp-admin` and `wp-includes`, and modified wordpress.org plugins. |
 | `vulns` | daily | Known vulnerabilities in the installed core, plugin and theme versions ([wpvulnerability.net](https://www.wpvulnerability.net), free, no API key). Plugins and themes closed on wordpress.org. Core missing security releases. |
 | `discover` | daily | New or removed WordPress installs, and sites that cannot be monitored (for example, owned by root). |
@@ -34,7 +34,7 @@ It works on cPanel/CloudLinux/Imunify360 servers and on plain LAMP/LEMP servers.
 | Severity | Examples |
 |---|---|
 | **critical** | New administrator, account promoted to administrator, core file modified, PHP file in uploads, new must-use plugin, new non-core PHP file in the site root, site URL changed, open registration as administrator, vulnerability rated high/critical or with no fix available. |
-| **warning** | Privileged account deleted or its e-mail changed, new unprivileged accounts, `wp-config.php` or `.htaccess` modified, plugin installed, activated or deactivated, medium or low vulnerability, a check that could not run. |
+| **warning** | Privileged account deleted or its e-mail changed, `wp-config.php` or `.htaccess` modified, plugin installed, activated or deactivated, medium or low vulnerability, a check that could not run. |
 | **info** | Plugin or theme updated or removed, theme switched, problem resolved. |
 
 A report is e-mailed when it contains at least one alert at `mail_min_severity` (default: warning). The e-mail is HTML with a plain-text version of the same summary. Set `mail_format = text` to get the full details in plain text instead. The full details of each report are also kept in `/var/log/wp-secmon/last-report-*.txt`, and every alert is written to `/var/log/wp-secmon/alerts.log` and to the journal.
@@ -44,6 +44,10 @@ A report is e-mailed when it contains at least one alert at `mail_min_severity` 
 **Ongoing problems** (modified core files, known vulnerabilities, PHP in uploads) are reported when they appear or change. While they persist, they are repeated every `alert_repeat_hours`, or weekly for vulnerabilities. Once fixed, they are reported as resolved. `wp-secmon status` lists what is still open.
 
 The first run records the baselines silently and reports only ongoing problems.
+
+**Harmless PHP in uploads** is recognized by its content, never by its path alone, since an attacker can drop a file anywhere. This covers "Silence is golden" stubs, compiled Twig templates (WPML cache), and PHP that cannot run code: files whose first statement is an unconditional `exit` (Sucuri's logs and settings), and files that only return a literal value (dompdf's font metrics, `*.ufm.php`). The files are read with PHP's own tokenizer, so a comment or `?>` cannot hide code in front of the `exit`. A web shell with the same name, in the same folder, is still reported.
+
+**Accepting files in uploads:** for other PHP files that plugins keep in uploads, `wp-secmon review` goes through the executable files found by the last `integrity` check, one at a time. It shows each file's size, SHA-256 and first lines, and asks whether to accept it. `c` prints the whole file, and `a` accepts the file and the rest of its folder. An accepted file is no longer reported until its content changes: its SHA-256 is compared on every check. Files are read as the site owner, never as root. `--site PATH` reviews only some sites. `--accepted` also shows the files accepted before; answer `n` to have one reported again.
 
 **Reporting everything again:** `wp-secmon reset` forgets which problems were already reported, and clears the cached vulnerability data. The next run (`wp-secmon all`) reports every open problem again, with fresh data. The baselines are kept, so real changes are still detected. Use `--site PATH` to reset only some sites.
 
@@ -94,6 +98,7 @@ wp-secmon all --no-mail         # records the baselines and prints the first rep
 wp-secmon [options] <command>
 
   discover | users | integrity | checksums | vulns | all | sites | status | reset | doctor
+  review [--accepted]
   install [--php=PATH] [--no-enable] | update [--check] | uninstall [--purge]
 
   -c, --config FILE   Configuration file (default /etc/wp-secmon/wp-secmon.ini)
@@ -127,8 +132,8 @@ Every setting is documented in [`resources/etc/wp-secmon.ini`](resources/etc/wp-
 - `language`: `en` (default) or `fr`. The reports, the e-mails and the command output are in this language; `--lang` overrides it for one command. After a change, open problems are reported once more, in the new language.
 - `scan_paths[]`: where to look for WordPress installs (default `/home`). Add `/var/www` or `/srv/www` on LEMP/LAMP servers.
 - `alert_email`: default `root`. On cPanel, root's mail goes to the server contact address.
-- `users_new_severity = info`: stops e-mails for customer sign-ups on shops and membership sites. New privileged accounts are still reported as critical.
-- `privileged_roles[]`: add `editor` or `shop_manager` if you consider them privileged.
+- `privileged_roles[]`: only these accounts are reported (default `administrator`, plus network super admins). Add `editor` or `shop_manager` if you consider them privileged.
+- `users_alert_new = all`: also report the other accounts created, deleted or modified. New ones are reported with `users_new_severity` (default `warning`).
 - `alert_command`: also push each report to Slack, ntfy, a ticketing system, etc. The text summary arrives on stdin. The command runs as root and the report quotes text controlled by the sites, so pass it along as data, never evaluate it.
 
 ### Which account a site is checked as
@@ -186,7 +191,7 @@ On the file and process side:
 | `/etc/wp-secmon/wp-secmon.ini`, `site-users.map` | Configuration (root-owned and not writable by others, or wp-secmon refuses to run) |
 | `/etc/systemd/system/wp-secmon@.service`, `wp-secmon-*.timer` | Service template and timers |
 | `/var/lib/wp-secmon/sites.json` | Discovered sites, skipped sites and the reason |
-| `/var/lib/wp-secmon/sites/<id>/` | Per-site baselines (`users.json`, `files.json`, `options.json`, `components.json`) and open alerts |
+| `/var/lib/wp-secmon/sites/<id>/` | Per-site baselines (`users.json`, `files.json`, `options.json`, `components.json`), executable files found in uploads and those accepted (`uploads-exec.json`, `uploads-accepted.json`), and open alerts |
 | `/var/lib/wp-secmon/cache/` | Vulnerability data and the WordPress release list |
 | `/var/log/wp-secmon/alerts.log` | Every alert raised |
 | `/var/log/wp-secmon/last-report-*.txt` | Full details of the last report of each check (the e-mail is a summary) |
@@ -196,8 +201,9 @@ To reset the baselines of one site, delete its directory under `/var/lib/wp-secm
 ## Development
 
 ```text
+Makefile              build and test: make help lists the targets
 bin/wp-secmon         run from a source checkout
-build.php             builds dist/wp-secmon.phar
+build.php             builds dist/wp-secmon.phar (make build)
 src/                  the application (namespace WpSecMon)
 resources/etc/        default configuration, site-users.map, logrotate rule
 resources/lang/       translations
@@ -207,18 +213,15 @@ tests/                unit and end-to-end tests
 ```
 
 ```sh
-php -d phar.readonly=0 build.php     # writes dist/wp-secmon.phar and dist/wp-secmon.phar.sha256
+make build    # writes dist/wp-secmon.phar and dist/wp-secmon.phar.sha256
 ```
 
-Messages are written in English in the code, through `I18n::t()` (and `n()` for plurals, see [`src/I18n.php`](src/I18n.php)). [`resources/lang/fr.php`](resources/lang/fr.php) maps each one to its French translation. `php tests/unit.php` fails when a message has no translation, when a translation is no longer used, or when the placeholders differ. To add a language, copy `fr.php`, add its code to `I18n::LANGUAGES` and to the `language` choices in [`src/Config.php`](src/Config.php), and give `I18n::n()` its plural rule if it differs from English.
+Messages are written in English in the code, through `I18n::t()` (and `n()` for plurals, see [`src/I18n.php`](src/I18n.php)). [`resources/lang/fr.php`](resources/lang/fr.php) maps each one to its French translation. `make test` fails when a message has no translation, when a translation is no longer used, or when the placeholders differ. To add a language, copy `fr.php`, add its code to `I18n::LANGUAGES` and to the `language` choices in [`src/Config.php`](src/Config.php), and give `I18n::n()` its plural rule if it differs from English.
 
 ```sh
-php tests/unit.php                                                       # parsing, diffs, version matching, file scan, alerts
-
-docker build -t wp-secmon-test -f tests/integration/Dockerfile .         # Debian 12, PHP 8.2
-docker run --rm wp-secmon-test
-docker build -t wp-secmon-test-el8 -f tests/integration/Dockerfile.el8 . # AlmaLinux 8, PHP 7.4, no posix
-docker run --rm wp-secmon-test-el8
+make test     # unit tests: parsing, diffs, version matching, file scan, alerts, translations
+make e2e      # end-to-end tests in Docker: Debian 12 with PHP 8.2, and AlmaLinux 8 with PHP 7.4 without posix
+              # (make e2e-debian or make e2e-el8 runs only one)
 ```
 
 The end-to-end test builds the phar and installs it. It then creates real sites owned by separate users and simulates attacks:

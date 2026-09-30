@@ -67,6 +67,8 @@ final class Doctor
         $this->line(function_exists('json_encode') ? 'ok' : 'FAIL', I18n::t('json extension'));
         $this->line(function_exists('posix_getpwnam') ? 'ok' : 'warn', function_exists('posix_getpwnam')
             ? I18n::t('posix extension') : I18n::t('posix extension missing (install php-process / php-posix); falling back to getent'));
+        $this->line(function_exists('token_get_all') ? 'ok' : 'warn', function_exists('token_get_all')
+            ? I18n::t('tokenizer extension') : I18n::t('tokenizer extension missing: harmless PHP data files in uploads (Sucuri, dompdf fonts) are reported'));
         $this->line(function_exists('curl_init') || extension_loaded('openssl') ? 'ok' : 'FAIL', I18n::t('HTTPS client (curl or openssl extension)'));
         $this->line(ini_get('open_basedir') ? 'warn' : 'ok', ini_get('open_basedir')
             ? I18n::t('open_basedir is set for the CLI; run with -d open_basedir=') : I18n::t('no open_basedir restriction'));

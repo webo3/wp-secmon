@@ -17,6 +17,7 @@ use WpSecMon\Http;
 use WpSecMon\I18n;
 use WpSecMon\Log;
 use WpSecMon\Report;
+use WpSecMon\Review;
 use WpSecMon\RunAs;
 use WpSecMon\Sites;
 use WpSecMon\Updater;
@@ -186,11 +187,14 @@ $old = UsersCheck::normalize([
     ['ID' => 2, 'user_login' => 'bob', 'user_email' => 'b@x.com', 'roles' => 'subscriber', 'user_registered' => '2020-01-01'],
     ['ID' => 3, 'user_login' => 'carl', 'user_email' => 'c@x.com', 'roles' => 'editor', 'user_registered' => '2020-01-01'],
     ['ID' => 4, 'user_login' => 'dan', 'user_email' => 'd@x.com', 'roles' => 'administrator', 'user_registered' => '2020-01-01'],
+    ['ID' => 5, 'user_login' => 'eve', 'user_email' => 'e@x.com', 'roles' => 'subscriber', 'user_registered' => '2020-01-01'],
+    ['ID' => 6, 'user_login' => 'fay', 'user_email' => 'f@x.com', 'roles' => 'subscriber', 'user_registered' => '2020-01-01'],
 ]);
 $new = UsersCheck::normalize([
     ['ID' => 1, 'user_login' => 'admin', 'user_email' => 'evil@x.com', 'roles' => 'administrator', 'user_registered' => '2020-01-01'],
     ['ID' => 2, 'user_login' => 'bob', 'user_email' => 'b@x.com', 'roles' => 'subscriber,administrator', 'user_registered' => '2020-01-01'],
     ['ID' => 3, 'user_login' => 'carl', 'user_email' => 'c2@x.com', 'roles' => 'author', 'user_registered' => '2020-01-01'],
+    ['ID' => 6, 'user_login' => 'fay2', 'user_email' => 'f@x.com', 'roles' => 'subscriber', 'user_registered' => '2020-01-01'],
     ['ID' => 7, 'user_login' => "wp\x1b[31mhack", 'user_email' => 'h@x.com', 'roles' => 'administrator', 'user_registered' => '2026-09-25'],
     ['ID' => 8, 'user_login' => 'cust', 'user_email' => 'cu@x.com', 'roles' => 'customer', 'user_registered' => '2026-09-25'],
 ]);
@@ -199,12 +203,21 @@ $expect = [
     'critical: Account granted privileges: bob',
     "critical: New privileged account: wp\x1b[31mhack (administrator)",
     'warning: Privileged account e-mail changed: admin',
+    'warning: Account login renamed: fay -> fay2',
     'warning: Privileged account deleted: dan',
     'warning: 1 new account(s) created',
+    'info: 1 account(s) deleted',
     'info: 1 account(s) modified',
 ];
-ok('users diff', $t === $expect, $t);
-ok('users diff privileged-only mode', !in_array('warning: 1 new account(s) created', titles(UsersCheck::diff($old, $new, ['administrator'], 'privileged', 'warning')), true));
+ok('users diff, every account', $t === $expect, $t);
+$t = titles(UsersCheck::diff($old, $new, ['administrator'], 'privileged', 'warning'));
+ok('users diff, privileged accounts only (default)', $t === [
+    'critical: Account granted privileges: bob',
+    "critical: New privileged account: wp\x1b[31mhack (administrator)",
+    'warning: Privileged account e-mail changed: admin',
+    'warning: Privileged account deleted: dan',
+], $t);
+ok('users alert on privileged accounts only by default', Config::fromArray([])->str('users_alert_new') === 'privileged');
 ok('users diff unchanged', UsersCheck::diff($old, $old, ['administrator'], 'all', 'warning') === []);
 $ms = UsersCheck::normalize([['ID' => 5, 'user_login' => 'net', 'user_email' => 'n@x', 'roles' => '', 'user_registered' => '']], ['net']);
 ok('super admin is privileged', UsersCheck::isPrivileged($ms[0], ['administrator']));
@@ -237,6 +250,11 @@ ok('files diff', titles(IntegrityCheck::diffFiles($f1, $f2)) === [
     'warning: PHP or configuration files directly in wp-content: 1 added',
     'critical: Must-use plugins (loaded on every request, cannot be disabled): 1 added',
 ], titles(IntegrityCheck::diffFiles($f1, $f2)));
+
+$found = ['wp-content/uploads/a.php' => ['hash' => 'h1'], 'wp-content/uploads/b.php' => ['hash' => 'h2'], 'wp-content/uploads/c.php' => ['hash' => 'h3']];
+$accepted = ['wp-content/uploads/a.php' => ['hash' => 'h1'], 'wp-content/uploads/b.php' => ['hash' => 'before'], 'wp-content/uploads/gone.php' => ['hash' => 'h4']];
+ok('accepted uploads: reported again once changed', IntegrityCheck::pendingUploads($found, $accepted)
+    === ['wp-content/uploads/b.php' => true, 'wp-content/uploads/c.php' => false], IntegrityCheck::pendingUploads($found, $accepted));
 
 // ---------------------------------------------------------------- checksums
 $core = ChecksumsCheck::parseCore(<<<'TXT'
@@ -286,6 +304,12 @@ file_put_contents("$twig/00/$h1.php", $template);
 file_put_contents("$twig/ab/$h2.php", "<?php\n/* x */ passthru(\$_GET['c']); /* y */\n" . substr($template, 6));
 file_put_contents("$twig/ab/$h3.php", $template);
 file_put_contents("$twig/00/shell.php", $template);
+// PHP data files that cannot run code, whatever their path: Sucuri logs and dompdf font metrics.
+mkdir("$tmp/site/wp-content/uploads/sucuri", 0700, true);
+file_put_contents("$tmp/site/wp-content/uploads/sucuri/sucuri-lastlogins.php", "<?php exit(0); ?>\n");
+file_put_contents("$tmp/site/wp-content/uploads/sucuri/sucuri-integrity.php", "<?php\n// datastore=integrity;\nexit(0);\n?>\nkey:{\"a\":1}\n");
+file_put_contents("$tmp/site/wp-content/uploads/sucuri/sucuri-shell.php", "<?php system(\$_GET['c']); exit(0); ?>\n");
+file_put_contents("$tmp/site/wp-content/uploads/2026/Font.ufm.php", '<?php return ' . var_export(['FontName' => 'Font', 'C' => [32 => 278, 33 => -1.5]], true) . ';');
 $scan = WpSecMon\FileScanner::scan(['root' => "$tmp/site", 'content' => "$tmp/site/wp-content",
     'mu' => "$tmp/site/wp-content/mu-plugins", 'uploads' => "$tmp/site/wp-content/uploads"]);
 $found = [];
@@ -295,13 +319,64 @@ foreach ($scan['entries'] as $e) {
 sort($found);
 ok('file scan', $found === [
     'mu:wp-content/mu-plugins/loader.php', 'root:index.php', 'root:radio.php', 'root:wp-config.php',
+    'uploads:wp-content/uploads/2026/Font.ufm.php:benign',
     'uploads:wp-content/uploads/2026/index.php', 'uploads:wp-content/uploads/2026/photo.php.jpg',
     "uploads:wp-content/uploads/cache/wpml/twig/00/$h1.php:benign",
     'uploads:wp-content/uploads/cache/wpml/twig/00/shell.php',
     "uploads:wp-content/uploads/cache/wpml/twig/ab/$h3.php",
     "uploads:wp-content/uploads/cache/wpml/twig/ab/$h2.php",
     'uploads:wp-content/uploads/index.php:benign',
+    'uploads:wp-content/uploads/sucuri/sucuri-integrity.php:benign',
+    'uploads:wp-content/uploads/sucuri/sucuri-lastlogins.php:benign',
+    'uploads:wp-content/uploads/sucuri/sucuri-shell.php',
 ], $found);
+
+// What runs first decides: an exit before anything else, or a returned literal and nothing more.
+$inert = [
+    "<?php exit; system('id');" => true,
+    "<?php /* data */ die('Silence'); ?>\n<?php system('id');" => true,
+    "<?PHP\nEXIT();" => true,
+    "<?php\n// a=b;\n// ?><?php system(\$_GET[1]);\nexit(0);" => false,  // the comment ends at the closing tag
+    "<?php exit(system('id'));" => false,
+    "<?php exit(`id`);" => false,
+    "<?php exit(0) or system('id');" => false,
+    "\xEF\xBB\xBF<?php exit;" => false,
+    "<?= exit; ?>" => false,
+    "<?php if (1) exit; ?>" => false,
+    '<?php return ' . var_export(['a' => [1 => 'x', 2 => "a\0b"], 'b' => -1.5, 'c' => true, 'd' => null, 'e' => INF], true) . ';' => true,
+    "<?php return 'a';\n?>\n" => true,
+    "<?php return array('a' => system('id'));" => false,
+    "<?php return ['a'] + system('id');" => false,
+    "<?php return array(); system('id');" => false,
+    "<?php return (object) array();" => false,
+    "<?php return Foo::BAR;" => false,
+    "<?php return \"\$x\";" => false,
+    "<?php return 1;\n?>\n<?php system('id');" => false,
+];
+$wrong = [];
+foreach ($inert as $code => $expect) {
+    if (WpSecMon\FileScanner::inert($code, true) !== $expect) {
+        $wrong[] = $code;
+    }
+}
+ok('inert PHP recognized by what runs first', $wrong === [], $wrong);
+ok('a returned value is only trusted when read whole', !WpSecMon\FileScanner::inert('<?php return array (1);', false)
+    && WpSecMon\FileScanner::inert('<?php exit; ', false));
+
+// A file under review is read once: the sha256 accepted is the one of the content shown.
+$read = WpSecMon\FileScanner::read("$tmp/site/radio.php");
+ok('read for review', $read['sha256'] === hash_file('sha256', "$tmp/site/radio.php") && $read['head'] === "<?php eval(\$_POST[1]);\n"
+    && $read['size'] === filesize("$tmp/site/radio.php") && !$read['truncated'] && IntegrityCheck::fileHash($read) === $read['sha256'], $read);
+$read = WpSecMon\FileScanner::read("$tmp/site/radio.php", 5);
+ok('read for review, first bytes only', $read['head'] === '<?php' && $read['truncated'] && $read['sha256'] === hash_file('sha256', "$tmp/site/radio.php"), $read);
+symlink('/etc/passwd', "$tmp/site/wp-content/uploads/2026/link.php");
+$read = WpSecMon\FileScanner::read("$tmp/site/wp-content/uploads/2026/link.php");
+ok('read for review does not follow symbolic links', $read['head'] === '' && IntegrityCheck::fileHash($read) === 'symlink -> /etc/passwd', $read);
+ok('read for review, missing file', WpSecMon\FileScanner::read("$tmp/site/none.php") === ['error' => 'missing']);
+ok('review preview neutralizes escape sequences', Review::preview("<?php\n\e[2J\xC2\x9B31m\r\nx\n", 0) === ['<?php', ' [2J 31m', 'x'],
+    Review::preview("<?php\n\e[2J\xC2\x9B31m\r\nx\n", 0));
+ok('review preview cuts long lines', strlen(Review::preview(str_repeat('a', 300), 160)[0]) === 160 && Review::preview('', 160) === []);
+ok('review preview hides binary content', Review::preview("GIF89a\0\0<?php", 0) === ['(binary content, not shown)']);
 Util::rmTree($tmp);
 
 // ---------------------------------------------------------------- run as

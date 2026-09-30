@@ -11,6 +11,8 @@ use WpSecMon\Util;
 
 /**
  * users: detect account creation, deletion and privilege changes.
+ * By default (users_alert_new = privileged) only privileged accounts are
+ * reported; with "all", other accounts created, deleted or changed too.
  *
  * `wp user list` is normalized and hashed; when the checksum differs from the
  * baseline the lists are compared and the changes reported. The new list then
@@ -133,6 +135,7 @@ final class UsersCheck extends Check
             return !empty($u['super']) ? I18n::t('%s + super admin', $list) : $list;
         };
 
+        $all = $mode === 'all';
         $o = array_column($old, null, 'id');
         $n = array_column($new, null, 'id');
         $ev = $addedOther = $removedOther = $other = [];
@@ -160,6 +163,9 @@ final class UsersCheck extends Check
                     ["    {$who($u)}", '    ' . I18n::t('roles: %s -> %s', $roles($was), $roles($u))], 'admin-lost'];
             }
             if ($was['login'] !== $u['login']) {
+                if (!$all && !$isPriv($was) && !$isPriv($u)) {
+                    continue;
+                }
                 $ev[] = ['warning', I18n::t('Account login renamed: %s -> %s', $was['login'], $u['login']),
                     ['    ' . I18n::t('%s, roles: %s', $who($u), $roles($u))], 'user-renamed'];
                 continue;
@@ -185,7 +191,7 @@ final class UsersCheck extends Check
             if (!empty($was['super']) !== !empty($u['super'])) {
                 $what[] = I18n::t('super admin removed');
             }
-            if ($what) {
+            if ($what && ($all || $isPriv($u))) {
                 $other[] = '    ' . I18n::t('%s: %s', $who($u), implode('; ', $what));
             }
         }
@@ -200,7 +206,7 @@ final class UsersCheck extends Check
             }
         }
 
-        if ($addedOther && $mode === 'all') {
+        if ($addedOther && $all) {
             $lines = [];
             foreach (array_slice($addedOther, 0, 50) as $u) {
                 $lines[] = '    ' . I18n::t('%s, role: %s, registered %s', $who($u), $roles($u), $u['registered']);
@@ -210,7 +216,7 @@ final class UsersCheck extends Check
             }
             $ev[] = [$newSev, I18n::n(count($addedOther), '%d new account(s) created', '%d new account(s) created', count($addedOther)), $lines, 'users-new'];
         }
-        if ($removedOther) {
+        if ($removedOther && $all) {
             $lines = [];
             foreach (array_slice($removedOther, 0, 50) as $u) {
                 $lines[] = '    ' . I18n::t('%s, role: %s', $who($u), $roles($u));

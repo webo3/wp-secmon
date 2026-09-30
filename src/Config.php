@@ -63,12 +63,11 @@ final class Config
 
         // users check
         'privileged_roles' => ['administrator'],
-        'users_alert_new' => 'all',
+        'users_alert_new' => 'privileged',
         'users_new_severity' => 'warning',
 
         // integrity check
         'risky_default_roles' => ['administrator', 'editor', 'author', 'shop_manager'],
-        'uploads_exec_allow' => [],
 
         // checksums check
         'core_checksum_ignore' => [],
