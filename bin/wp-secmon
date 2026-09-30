@@ -1,0 +1,7 @@
+#!/usr/bin/env php
+<?php
+/**
+ * wp-secmon from a source checkout. Servers run the phar built by build.php.
+ */
+
+require dirname(__DIR__) . '/src/main.php';

@@ -1,0 +1,81 @@
+# Publishes wp-secmon.phar on the Releases page. Set VERSION in src/bootstrap.php,
+# then push a matching tag:
+#
+#   git tag v0.1.0 && git push origin v0.1.0
+#
+# A tag with a suffix (v0.2.0-rc1) is published as a pre-release.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        php: ['7.4', '8.4']
+    steps:
+      - uses: actions/checkout@v5
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          coverage: none
+      - run: php tests/unit.php
+
+  integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      matrix:
+        dockerfile: [Dockerfile, Dockerfile.el8]
+    steps:
+      - uses: actions/checkout@v5
+      - run: docker build -t wp-secmon-test -f tests/integration/${{ matrix.dockerfile }} .
+      - run: docker run --rm wp-secmon-test
+
+  release:
+    needs: [unit, integration]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write     # create the release
+      id-token: write     # sign the build provenance
+      attestations: write
+    steps:
+      - uses: actions/checkout@v5
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.4'
+          coverage: none
+
+      - name: Check that the tag matches VERSION
+        run: |
+          version=$(sed -n "s/^const VERSION = '\(.*\)';$/\1/p" src/bootstrap.php)
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match VERSION '$version' in src/bootstrap.php"
+            exit 1
+          fi
+
+      - run: php -d phar.readonly=0 build.php
+
+      - name: Smoke test
+        run: |
+          php dist/wp-secmon.phar --version | grep -Fx "wp-secmon ${GITHUB_REF_NAME#v}"
+          cd dist && sha256sum -c wp-secmon.phar.sha256
+
+      - uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: dist/wp-secmon.phar
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          flags=()
+          case "$GITHUB_REF_NAME" in *-*) flags+=(--prerelease) ;; esac
+          gh release create "$GITHUB_REF_NAME" dist/wp-secmon.phar dist/wp-secmon.phar.sha256 \
+            --verify-tag --generate-notes --title "wp-secmon ${GITHUB_REF_NAME#v}" "${flags[@]}"

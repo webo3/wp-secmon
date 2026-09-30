@@ -1,0 +1,19 @@
+# End-to-end test on EL8 (AlmaLinux, same family as CloudLinux 8 / cPanel) with PHP 7.4.
+# php-process (posix) is left out on purpose to exercise the getent fallback.
+#
+#   docker build -t wp-secmon-test-el8 -f tests/integration/Dockerfile.el8 .
+#   docker run --rm wp-secmon-test-el8
+FROM almalinux:8
+
+RUN dnf -y module enable php:7.4 \
+ && dnf -y install php-cli php-mysqlnd php-json php-xml php-mbstring mariadb-server \
+      util-linux procps-ng tar gzip \
+ && dnf clean all
+
+RUN curl -fsSL -o /usr/local/bin/wp https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar \
+ && chmod 755 /usr/local/bin/wp \
+ && curl -fsSL https://wordpress.org/latest.tar.gz | tar xz -C /opt \
+ && mv /opt/wordpress /opt/wp-core
+
+COPY . /src
+CMD ["php", "/src/tests/integration/run.php"]

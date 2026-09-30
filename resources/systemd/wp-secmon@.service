@@ -1,0 +1,26 @@
+[Unit]
+Description=wp-secmon WordPress %i check
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=@PHP@ -d disable_functions= -d open_basedir= @BIN@ --quiet %i
+TimeoutStartSec=6h
+Nice=10
+IOSchedulingClass=idle
+CPUSchedulingPolicy=batch
+
+# wp-secmon is read-only. Common document roots are mounted read-only for the
+# whole process tree, including WP-CLI running as the site owners. Add your
+# own with "systemctl edit wp-secmon@.service" (ReadOnlyPaths=-/path).
+ReadOnlyPaths=-/home -/var/www -/srv
+# Nothing in the process tree, site code included, can gain privileges through
+# setuid binaries, whatever run_as_method is. If run_as_method = cagefs stops
+# working, try NoNewPrivileges=no with "systemctl edit wp-secmon@.service".
+NoNewPrivileges=yes
+ProtectSystem=full
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
