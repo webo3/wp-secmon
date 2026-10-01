@@ -111,7 +111,7 @@ wp-secmon [options] <command>
   -q, --quiet         Only warnings and errors
 ```
 
-`wp-secmon sites` lists the discovered sites, the account each one is checked as, and why the others are not monitored. When there is no site list yet, it runs the discovery first.
+`wp-secmon sites` lists the discovered sites with their URL, their administration e-mail and the account each one is checked as, and why the others are not monitored. The URL and the e-mail are the ones read by the last `integrity` check, and show as `-` until it has run. When there is no site list yet, it runs the discovery first.
 
 **Rescanning one site:** `wp-secmon all --site /home/alice/public_html` examines that site again (after a change to `site-users.map`, for example) and runs every check on it, without searching the whole server. It reports only on that site. `wp-secmon discover --site PATH` only updates the site list. Either way, a site must already be in the list: run `wp-secmon discover` to find new ones.
 

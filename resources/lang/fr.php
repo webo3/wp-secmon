@@ -370,8 +370,9 @@ Commands:
   checksums   Core and wordpress.org plugin files against official checksums
   vulns       Known vulnerabilities, closed plugins, outdated core
   all         discover + users + integrity + checksums + vulns
-  sites       List the discovered sites and the account each one is checked
-              as (runs discovery first when there is no site list yet)
+  sites       List the discovered sites with their address, administration
+              e-mail and the account each one is checked as (runs discovery
+              first when there is no site list yet)
   status      Show open (unresolved) alerts
   review      Go through the executable files found in uploads and accept
               the harmless ones: an accepted file is no longer reported,
@@ -422,8 +423,9 @@ Commandes :
               aux sommes de contrôle officielles
   vulns       Vulnérabilités connues, extensions retirées, WordPress périmé
   all         discover + users + integrity + checksums + vulns
-  sites       Lister les sites découverts et le compte utilisé pour chacun
-              (lance d’abord la découverte s’il n’y a pas encore de liste)
+  sites       Lister les sites découverts avec leur adresse, leur courriel
+              d’administration et le compte utilisé pour chacun (lance
+              d’abord la découverte s’il n’y a pas encore de liste)
   status      Afficher les alertes ouvertes (non résolues)
   review      Examiner les fichiers exécutables trouvés dans uploads et
               accepter ceux qui sont sans danger : un fichier accepté n’est
@@ -477,6 +479,8 @@ Options :
         => 'Ajoutez les dossiers qui contiennent les sites à scan_paths dans %s, puis lancez « wp-secmon discover ».',
     'Discovered %s: %d monitored, %d skipped, %d without wp-config.php' => 'Découverte du %s : %d surveillé(s), %d ignoré(s), %d sans wp-config.php',
     'CHECKED AS' => 'COMPTE',
+    'URL' => 'URL',
+    'ADMIN E-MAIL' => 'COURRIEL ADMIN',
     'WORDPRESS ROOT' => 'RACINE WORDPRESS',
     'Not monitored:' => 'Non surveillés :',
     'WordPress files without wp-config.php (old copies?):' => 'Fichiers WordPress sans wp-config.php (anciennes copies?) :',

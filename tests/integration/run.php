@@ -238,8 +238,8 @@ step('discovery');
 echo $out;
 expect('sites runs the first discovery', has($out, 'no site list yet: discovering the WordPress installs first') && is_file('/var/lib/wp-secmon/sites.json'), $out);
 expect('unmonitored root-owned site reported', $mail !== '' && has($details, 'Site is not monitored: owned by root'), $details);
-expect('finds alice as alice', (bool) preg_match('#^alice\s+' . ALICE . '$#m', $out), $out);
-expect('finds bob (wp-config.php in parent) as bob', (bool) preg_match('#^bob\s+' . BOB . '$#m', $out), $out);
+expect('finds alice as alice', (bool) preg_match('#^alice\s+-\s+-\s+' . ALICE . '$#m', $out), $out);
+expect('finds bob (wp-config.php in parent) as bob', (bool) preg_match('#^bob\s+-\s+-\s+' . BOB . '$#m', $out), $out);
 expect('root-owned site is not checked as root', has($out, "Not monitored:\n  " . ROOTSITE) && has($out, 'owned by root'), $out);
 
 // ---------------------------------------------------------------------------
@@ -449,9 +449,10 @@ expect('the site list keeps the date of the last full discovery',
     json_decode((string) file_get_contents('/var/lib/wp-secmon/sites.json'), true)['generated'] === $generated);
 [, $out] = wpsecmon('sites');
 echo $out;
-expect('root-owned site mapped to www-data', (bool) preg_match('#^www-data\s+' . ROOTSITE . '$#m', $out), $out);
+expect('root-owned site mapped to www-data', (bool) preg_match('#^www-data\s+-\s+-\s+' . ROOTSITE . '$#m', $out), $out);
 expect('mapping a site to root is refused', has($out, BOB . "\n      refusing to check a site as root"), $out);
-expect('other sites untouched by the rediscovery', (bool) preg_match('#^alice\s+' . ALICE . '$#m', $out), $out);
+expect('other sites untouched by the rediscovery, listed with their URL and administration e-mail',
+    (bool) preg_match('#^alice\s+http://alice\.test\s+owner@alice\.test\s+' . ALICE . '$#m', $out), $out);
 [, $out, , $details] = wpsecmon('users', '--print', '--site', ROOTSITE);
 expect('mapped site checked as www-data', !has($out . $details, 'Check failed') && has($out, 'user baseline recorded'), $out);
 

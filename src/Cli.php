@@ -47,8 +47,9 @@ Commands:
   checksums   Core and wordpress.org plugin files against official checksums
   vulns       Known vulnerabilities, closed plugins, outdated core
   all         discover + users + integrity + checksums + vulns
-  sites       List the discovered sites and the account each one is checked
-              as (runs discovery first when there is no site list yet)
+  sites       List the discovered sites with their address, administration
+              e-mail and the account each one is checked as (runs discovery
+              first when there is no site list yet)
   status      Show open (unresolved) alerts
   review      Go through the executable files found in uploads and accept
               the harmless ones: an accepted file is no longer reported,
@@ -353,13 +354,18 @@ TXT);
                 . I18n::t("Add the directories that hold the sites to scan_paths in %s, then run 'wp-secmon discover'.", $this->cfg->file) . "\n");
             return 0;
         }
+        // Address and administration e-mail as read by the last integrity check. The root comes last: it is never cut.
+        $show = static function ($value): string {
+            return is_string($value) && $value !== '' ? $value : '-';
+        };
         $rows = [];
         foreach ($reg['sites'] as $s) {
-            $rows[] = [$s['user'], $s['root']];
+            $o = Util::readJson($this->cfg->str('state_dir') . '/sites/' . Site::idFor($s['root']) . '/options.json') ?? [];
+            $rows[] = [$s['user'], $show($o['home'] ?? null), $show($o['admin_email'] ?? null), $s['root']];
         }
         fwrite(STDOUT, I18n::t('Discovered %s: %d monitored, %d skipped, %d without wp-config.php',
             date('Y-m-d H:i', (int) $reg['generated']), count($reg['sites']), count($reg['skipped']), count($reg['orphans'])) . "\n\n");
-        self::table([I18n::t('CHECKED AS'), I18n::t('WORDPRESS ROOT')], $rows);
+        self::table([I18n::t('CHECKED AS'), I18n::t('URL'), I18n::t('ADMIN E-MAIL'), I18n::t('WORDPRESS ROOT')], $rows);
         if ($reg['skipped']) {
             fwrite(STDOUT, "\n" . I18n::t('Not monitored:') . "\n");
             foreach ($reg['skipped'] as $s) {
