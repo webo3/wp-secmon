@@ -518,6 +518,74 @@ ok('forget one site', Alerts::forget($state, [$site->id]) === 2 && count(Alerts:
 ok('forget everything', Alerts::forget($state) === 2 && Alerts::openAlerts($state) === [] && is_file("$state/sites/{$site->id}/users.json"));
 Util::rmTree($state);
 
+// ---------------------------------------------------------------- reports to site administrators
+ok('plain administration address', Alerts::address('Owner@B.example') === 'Owner@B.example');
+$odd = ["a@b.example\nBcc: x@y.example", "a@b.example\n", 'a@b.example, x@y.example', '<a@b.example>', 'a b@c.example', '-f@b.example',
+    'root', 'a@localhost', '', null, ['a@b.example']];
+ok('addresses that could add recipients or headers refused', array_filter($odd, [Alerts::class, 'address']) === []);
+
+// Two sites with the same address, one whose address changed, one whose address is not usable.
+$state = sys_get_temp_dir() . '/wpg-admins-' . getmypid();
+$shop = new WpSecMon\Site('/home/b/shop', '/home/b/shop/wp-config.php', 'b');
+$blog = new WpSecMon\Site('/home/b/blog', '/home/b/blog/wp-config.php', 'b');
+$unknown = new WpSecMon\Site('/home/c/public_html', '/home/c/public_html/wp-config.php', 'c');
+Util::writeJson("$state/sites/{$site->id}/options.json", ['admin_email' => 'new@a.example']);
+Util::writeJson("$state/sites/{$shop->id}/options.json", ['admin_email' => 'Owner@B.example']);
+Util::writeJson("$state/sites/{$blog->id}/options.json", ['admin_email' => 'owner@b.example']);
+Util::writeJson("$state/sites/{$unknown->id}/options.json", ['admin_email' => "x@c.example\nBcc: y@c.example"]);
+file_put_contents("$state/sendmail", "#!/bin/sh\ncat >> $state/mail.txt\n");
+chmod("$state/sendmail", 0755);
+$run = static function (array $settings) use ($state, $site, $shop, $blog, $unknown): Alerts {
+    Alerts::forget($state);
+    $a = new Alerts(Config::fromArray(['state_dir' => $state, 'log_dir' => $state, 'sendmail' => "$state/sendmail"] + $settings));
+    $a->checksRun = ['integrity'];
+    foreach ([$site, $shop, $blog, $unknown] as $s) {
+        $a->checked[$s->root] = true;
+    }
+    $a->setSite($site);
+    foreach (IntegrityCheck::diffOptions(['admin_email' => 'old@a.example'], ['admin_email' => 'new@a.example']) as [$sev, $title, $lines, $meta]) {
+        $a->event($sev, $title, $lines, $meta);
+    }
+    $a->setSite($shop);
+    $a->event('critical', 'New privileged account: eve (administrator)', '', ['kind' => 'admin-new']);
+    $a->setSite($blog);
+    $a->event('info', '1 plugin(s) removed', '', ['kind' => 'components']);
+    $a->siteError('files', 'file scan failed');
+    $a->setSite($unknown);
+    $a->event('warning', '1 plugin(s) installed', '', ['kind' => 'components']);
+    $a->setSite(null);
+    return $a;
+};
+$mailings = static function (Alerts $a): array {
+    return array_map(static function (array $m): string {
+        return sprintf('%s cc=%s sites=%d errors=%d: %s', $m[0], implode(',', $m[1]), $m[3], $m[4], implode(' ', array_column($m[2], 'root')));
+    }, $a->mailings());
+};
+$m = $mailings($run([]));
+ok('one report for alert_email by default', $m === ['root cc= sites=4 errors=1: /home/a/public_html /home/b/shop /home/b/blog /home/b/blog /home/c/public_html'], $m);
+$admins = ['alert_site_admins' => true, 'alert_site_admins_cc' => ['soc@host.example', 'OWNER@b.example']];
+$m = $mailings($run($admins));
+ok('one report per site administrator, the rest for alert_email', $m === [
+    'root cc= sites=1 errors=1: /home/b/blog /home/c/public_html',
+    'new@a.example cc=soc@host.example,OWNER@b.example sites=1 errors=0: /home/a/public_html',
+    'old@a.example cc=soc@host.example,OWNER@b.example sites=1 errors=0: /home/a/public_html',
+    'Owner@B.example cc=soc@host.example sites=2 errors=0: /home/b/shop /home/b/blog',
+], $m);
+$run($admins + ['mail_min_severity' => 'critical'])->finish();
+$mail = (string) @file_get_contents("$state/mail.txt");
+$text = explode('Content-Type: text/html', $mail)[0];
+ok('each e-mail is sent on its own severity', substr_count($mail, "\nSubject: ") === 1 && strpos($mail, "To: Owner@B.example\nCc: soc@host.example\n") === 0
+    && strpos($mail, 'CRITICAL - 1 critical, 0 warning (integrity)') !== false, $mail);
+ok('an administrator only sees their own sites', strpos($text, '/home/b/shop') !== false && strpos($text, '/home/b/blog') !== false
+    && strpos($text, '2 sites checked') !== false && strpos($text, '/home/a/') === false && strpos($text, '/home/c/') === false
+    && strpos($text, 'file scan failed') === false, $text);
+unlink("$state/mail.txt");
+$run($admins)->finish();
+$mail = (string) @file_get_contents("$state/mail.txt");
+ok('one e-mail per recipient', preg_match_all('/^To: (.+)$/m', $mail, $to) === 4
+    && $to[1] === ['root', 'new@a.example', 'old@a.example', 'Owner@B.example'] && substr_count($mail, "\nCc: ") === 3, $to[1]);
+Util::rmTree($state);
+
 // ---------------------------------------------------------------- rediscovering one site
 $tmp = sys_get_temp_dir() . '/wpm-sites-' . getmypid();
 foreach (['one', 'two'] as $name) {

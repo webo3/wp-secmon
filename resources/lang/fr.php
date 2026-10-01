@@ -563,6 +563,9 @@ Options :
         => 'programme : %s doit appartenir à root et ne pas être modifiable par le groupe ou les autres : les propriétaires des sites l’exécutent',
     'Alerts and storage' => 'Alertes et stockage',
     'mail to %s via %s' => 'courriel à %s via %s',
+    'each site is reported to its WordPress administration address' => 'chaque site est signalé à son adresse courriel d’administration WordPress',
+    'each site is reported to its WordPress administration address, with a copy to %s'
+        => 'chaque site est signalé à son adresse courriel d’administration WordPress, avec copie à %s',
     '%s not found, using PHP mail()' => '%s introuvable, PHP mail() est utilisé',
     '%s not found' => '%s introuvable',
     '%s %s is not writable' => '%s %s n’est pas accessible en écriture',

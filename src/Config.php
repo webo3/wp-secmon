@@ -50,6 +50,8 @@ final class Config
 
         // Alerting
         'alert_email' => 'root',
+        'alert_site_admins' => false,
+        'alert_site_admins_cc' => [],
         'alert_from' => '',
         'sendmail' => '/usr/sbin/sendmail',
         'mail_min_severity' => 'warning',

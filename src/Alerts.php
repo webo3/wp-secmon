@@ -14,7 +14,8 @@ namespace WpSecMon;
  *             repeated every N hours while unchanged, and reported as resolved
  *             once resolve() is called for its key.
  *
- * Everything reported during one run is mailed as a single report (see Report).
+ * Everything reported during one run is mailed as a single report (see Report),
+ * or as one report per site administrator with alert_site_admins (see mailings()).
  * Each alert carries a "kind" (by default the prefix of its key) and optional
  * structured "meta" that the report uses to suggest what to do.
  */
@@ -33,7 +34,8 @@ final class Alerts
 
     public string $check = 'wp-secmon';
     public array $checksRun = [];
-    public int $sitesChecked = 0;
+    /** Sites checked during this run (root => true), for the report totals. */
+    public array $checked = [];
     public int $errors = 0;
     public int $suppressed = 0;
     public bool $noMail = false;
@@ -257,60 +259,164 @@ final class Alerts
     public function finish(): void
     {
         $checks = $this->checksRun ? implode(', ', $this->checksRun) : 'none';
-        $count = ['critical' => 0, 'warning' => 0, 'info' => 0];
-        $max = 0;
-        foreach ($this->records as $r) {
-            $count[$r['sev']] = ($count[$r['sev']] ?? 0) + 1;
-            $max = max($max, self::RANK[$r['sev']] ?? 0);
-        }
+        [$count, $max] = self::tally($this->records);
         Log::info(I18n::t(
             'finished %s: %d site(s) checked, %d error(s); alerts: %d critical, %d warning, %d info (%d unchanged not repeated)',
-            $checks, $this->sitesChecked, $this->errors, $count['critical'], $count['warning'], $count['info'], $this->suppressed
+            $checks, count($this->checked), $this->errors, $count['critical'], $count['warning'], $count['info'], $this->suppressed
         ));
         if (!$this->records) {
             return;
         }
 
-        $host = Util::hostname();
-        $detailsFile = $this->logDir . '/last-report-' . str_replace(', ', '-', $checks) . '.txt';
-        $report = new Report($this->records, [
-            'host' => $host,
+        $run = [
+            'host' => Util::hostname(),
             'checks' => $checks,
             'started' => $this->started,
             'duration' => time() - $this->started,
-            'sites' => $this->sitesChecked,
+            'sites' => count($this->checked),
             'errors' => $this->errors,
             'count' => $count,
-            'details' => $detailsFile,
+            'details' => $this->logDir . '/last-report-' . str_replace(', ', '-', $checks) . '.txt',
             'log' => $this->logDir . '/alerts.log',
-        ], $this->cfg);
-        $details = $report->details();
-        @file_put_contents($detailsFile, $details);
+        ];
+        $report = new Report($this->records, $run, $this->cfg);
+        @file_put_contents($run['details'], $report->details());
         if ($this->print) {
             $color = function_exists('posix_isatty') && posix_isatty(STDOUT) && (string) getenv('NO_COLOR') === '';
             fwrite(STDOUT, $report->text($color));
         }
 
-        $label = $max >= 3 ? 'CRITICAL' : ($max === 2 ? 'WARNING' : 'INFO');
-        $subject = '[wp-secmon] ' . I18n::t('%s: %s - %s, %s (%s)', $host, Util::upper(Report::severityName(strtolower($label))),
-            Report::countLabel('critical', $count['critical']), Report::countLabel('warning', $count['warning']), $checks);
-        if ($this->noMail || $max < (self::RANK[$this->cfg->str('mail_min_severity')] ?? 2)) {
+        $min = self::RANK[$this->cfg->str('mail_min_severity')] ?? 2;
+        if ($this->noMail || $max < $min) {
             return;
         }
-        $summary = $report->text(false);
-        if ($this->cfg->str('mail_format') === 'text') {
-            $this->mail($subject, ["Content-Type: text/plain; charset=UTF-8", 'Content-Transfer-Encoding: 8bit'], $details);
-        } else {
-            [$headers, $body] = self::mime($summary, $report->html(), 'wp-secmon-' . bin2hex(random_bytes(12)));
-            $this->mail($subject, $headers, $body);
+        // Each e-mail has the alerts and the totals of its own sites, and is sent on its own severity.
+        foreach ($this->mailings() as [$to, $cc, $records, $sites, $errors]) {
+            [$partCount, $partMax] = self::tally($records);
+            if ($partMax < $min) {
+                continue;
+            }
+            $part = ['sites' => $sites, 'errors' => $errors, 'count' => $partCount] + $run;
+            $partReport = new Report($records, $part, $this->cfg);
+            if ($this->cfg->str('mail_format') === 'text') {
+                $this->mail($to, $cc, self::subject($part, $partMax), ["Content-Type: text/plain; charset=UTF-8", 'Content-Transfer-Encoding: 8bit'],
+                    $partReport->details());
+            } else {
+                [$headers, $body] = self::mime($partReport->text(false), $partReport->html(), 'wp-secmon-' . bin2hex(random_bytes(12)));
+                $this->mail($to, $cc, self::subject($part, $partMax), $headers, $body);
+            }
         }
         if ($this->cfg->str('alert_command') !== '') {
-            $cmd = ['/bin/sh', '-c', 'WPG_SUBJECT="$1" WPG_SEVERITY="$2" exec /bin/sh -c "$3"', 'sh', $subject, $label, $this->cfg->str('alert_command')];
-            [$code, , $err] = Proc::capture($cmd, 120, $summary);
+            $label = $max >= 3 ? 'CRITICAL' : ($max === 2 ? 'WARNING' : 'INFO');
+            $cmd = ['/bin/sh', '-c', 'WPG_SUBJECT="$1" WPG_SEVERITY="$2" exec /bin/sh -c "$3"', 'sh', self::subject($run, $max), $label,
+                $this->cfg->str('alert_command')];
+            [$code, , $err] = Proc::capture($cmd, 120, $report->text(false));
             if ($code !== 0) {
                 Log::error(I18n::t('alert_command failed: %s', Util::oneLine($err)));
             }
         }
+    }
+
+    /** @return array{0: array<string, int>, 1: int} [alerts per severity, rank of the most severe] */
+    private static function tally(array $records): array
+    {
+        $count = ['critical' => 0, 'warning' => 0, 'info' => 0];
+        $max = 0;
+        foreach ($records as $r) {
+            $count[$r['sev']] = ($count[$r['sev']] ?? 0) + 1;
+            $max = max($max, self::RANK[$r['sev']] ?? 0);
+        }
+        return [$count, $max];
+    }
+
+    /** @param array $run see Report */
+    private static function subject(array $run, int $max): string
+    {
+        $sev = $max >= 3 ? 'critical' : ($max === 2 ? 'warning' : 'info');
+        return '[wp-secmon] ' . I18n::t('%s: %s - %s, %s (%s)', $run['host'], Util::upper(Report::severityName($sev)),
+            Report::countLabel('critical', $run['count']['critical']), Report::countLabel('warning', $run['count']['warning']), $run['checks']);
+    }
+
+    /**
+     * Who is e-mailed what: [recipient, copies (Cc), alerts, sites checked, check errors] per e-mail.
+     *
+     * Everything goes to alert_email. With alert_site_admins, each site goes
+     * instead to its WordPress administration address, as read by the last
+     * integrity check: one e-mail per address, whatever the number of its sites.
+     * Notes about the monitoring itself, and the sites without a usable address,
+     * still go to alert_email.
+     * @return array<int, array{0: string, 1: string[], 2: array[], 3: int, 4: int}>
+     */
+    public function mailings(): array
+    {
+        $fallback = $this->cfg->str('alert_email');
+        if (!$this->cfg->bool('alert_site_admins')) {
+            return [[$fallback, [], $this->records, count($this->checked), $this->errors]];
+        }
+        // The address is in the hands of the site: when it changes, the report that
+        // says so also goes to the previous one, so that it cannot be diverted quietly.
+        $before = [];
+        $roots = $this->checked;
+        foreach ($this->records as $r) {
+            if ($r['kind'] === 'option' && ($r['meta']['option'] ?? '') === 'admin_email') {
+                $before[$r['root']] = $r['meta']['before'] ?? null;
+            }
+            if (!Report::isServerNote($r)) {
+                $roots[$r['root']] = true;
+            }
+        }
+
+        // Keyed by the address in lower case; '' is alert_email, which gets the check errors.
+        $mails = ['' => [$fallback, [], [], 0, $this->errors]];
+        $copies = $this->cfg->list('alert_site_admins_cc');
+        $keys = [];
+        foreach (array_keys($roots) as $root) {
+            $root = (string) $root;
+            $options = Util::readJson($this->stateDir . '/sites/' . Site::idFor($root) . '/options.json');
+            foreach ([$options['admin_email'] ?? null, $before[$root] ?? null] as $address) {
+                $address = self::address($address);
+                if ($address === null) {
+                    continue;
+                }
+                $key = strtolower($address);
+                if (!isset($mails[$key])) {
+                    // No copy to the recipient itself.
+                    $cc = array_values(array_filter($copies, static function (string $copy) use ($key): bool {
+                        return strtolower($copy) !== $key;
+                    }));
+                    $mails[$key] = [$address, $cc, [], 0, 0];
+                }
+                $keys[$root][$key] = true;
+            }
+            if (!isset($keys[$root])) {
+                Log::debug("$root: no usable administration address, reported to $fallback");
+                $keys[$root][''] = true;
+            }
+            if (isset($this->checked[$root])) {
+                foreach (array_keys($keys[$root]) as $key) {
+                    $mails[$key][3]++;
+                }
+            }
+        }
+        foreach ($this->records as $r) {
+            foreach (Report::isServerNote($r) ? [''] : array_keys($keys[$r['root']]) as $key) {
+                $mails[$key][2][] = $r;
+            }
+        }
+        return array_values(array_filter($mails, static function (array $mail): bool {
+            return $mail[2] !== [];
+        }));
+    }
+
+    /**
+     * An administration address as it can be written in a mail header, or null.
+     * The site chooses it: anything but a plain address is refused, so that it
+     * cannot add recipients or headers.
+     */
+    public static function address($value): ?string
+    {
+        return is_string($value) && strlen($value) <= 254
+            && preg_match('/^[A-Za-z0-9_][A-Za-z0-9._+-]*@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$/D', $value) ? $value : null;
     }
 
     /**
@@ -329,11 +435,14 @@ final class Alerts
         return [["Content-Type: multipart/alternative; boundary=\"$boundary\"", 'Content-Transfer-Encoding: 8bit'], $body];
     }
 
-    /** @param string[] $mimeHeaders Content-Type and Content-Transfer-Encoding */
-    private function mail(string $subject, array $mimeHeaders, string $body): void
+    /**
+     * @param string[] $cc
+     * @param string[] $mimeHeaders Content-Type and Content-Transfer-Encoding
+     */
+    private function mail(string $to, array $cc, string $subject, array $mimeHeaders, string $body): void
     {
-        $to = $this->cfg->str('alert_email');
         $sendmail = $this->cfg->str('sendmail');
+        $copies = $cc ? 'Cc: ' . implode(', ', $cc) . "\n" : '';
         $mime = "MIME-Version: 1.0\n" . implode("\n", $mimeHeaders) . "\n";
         // Translated subjects may have accents: RFC 2047 encoded words of at most 75 characters.
         if (preg_match('/[^\x20-\x7E]/', $subject) && preg_match_all('/.{1,10}/us', $subject, $m)) {
@@ -342,7 +451,7 @@ final class Alerts
             }, $m[0]));
         }
         if (is_file($sendmail) && is_executable($sendmail)) {
-            $headers = "To: $to\n";
+            $headers = "To: $to\n" . $copies;
             if ($this->cfg->str('alert_from') !== '') {
                 $headers .= 'From: ' . $this->cfg->str('alert_from') . "\n";
             }
@@ -353,7 +462,7 @@ final class Alerts
                 return;
             }
             Log::error(I18n::t('sending the report with %s failed: %s', $sendmail, Util::oneLine($err)));
-        } elseif (function_exists('mail') && @mail($to, $subject, $body, str_replace("\n", "\r\n", "Auto-Submitted: auto-generated\n" . rtrim($mime)))) {
+        } elseif (function_exists('mail') && @mail($to, $subject, $body, str_replace("\n", "\r\n", "Auto-Submitted: auto-generated\n" . $copies . rtrim($mime)))) {
             Log::info(I18n::t('report sent to %s with mail()', $to));
             return;
         }

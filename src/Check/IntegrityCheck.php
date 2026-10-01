@@ -116,7 +116,7 @@ final class IntegrityCheck extends Check
             if (array_key_exists($key, $old) && ($old[$key] ?? null) !== ($new[$key] ?? null)) {
                 $out[] = [$sev, self::changed($key),
                     ['    ' . I18n::t('before: %s', $show($old[$key])), '    ' . I18n::t('after:  %s', $show($new[$key] ?? null))],
-                    ['kind' => 'option', 'option' => $key]];
+                    ['kind' => 'option', 'option' => $key, 'before' => $old[$key]]];
             }
         }
         return $out;

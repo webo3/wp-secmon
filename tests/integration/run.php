@@ -362,6 +362,28 @@ echo $out;
 expect('status lists open alerts', has($out, 'executable file(s) in the uploads directory') && !has($out, 'WordPress core files'), $out);
 
 // ---------------------------------------------------------------------------
+step('reports to site administrators');
+// Alice and bob have the same administration address: one e-mail for both sites, with a copy.
+$ini = (string) file_get_contents('/etc/wp-secmon/wp-secmon.ini');
+file_put_contents('/etc/wp-secmon/wp-secmon.ini', $ini . "alert_site_admins = yes\nalert_site_admins_cc[] = soc@example.test\n");
+wp('alice', ALICE, ['plugin', 'deactivate', 'hello', '--quiet']);
+wp('bob', BOB, ['plugin', 'activate', 'hello', '--quiet']);
+[, $out, $mail] = wpsecmon('integrity');
+$html = mailHtml($mail);
+expect('one e-mail for the administrator of both sites, with a copy', substr_count($mail, "\nSubject: ") === 1
+    && strpos($mail, "To: admin@example.test\nCc: soc@example.test\n") === 0, $out . $mail);
+expect('that e-mail reports both sites', has($html, ALICE) && has($html, BOB) && has($html, '2 sites checked'), $html);
+// A changed address still gets the report that says so.
+wp('alice', ALICE, ['option', 'update', 'admin_email', 'owner@alice.test', '--quiet']);
+[, $out, $mail] = wpsecmon('integrity');
+expect('address change reported to the old and the new address', substr_count($mail, "\nSubject: ") === 2
+    && has($mail, "To: owner@alice.test\nCc: soc@example.test\n") && has($mail, "To: admin@example.test\nCc: soc@example.test\n")
+    && substr_count($mail, 'Content-Type: text/plain') === 2 && !has($mail, 'To: root'), $out . $mail);
+[$code, $out] = wpsecmon('doctor');
+expect('doctor shows who is e-mailed', has($out, 'each site is reported to its WordPress administration address, with a copy to soc@example.test'), $out);
+file_put_contents('/etc/wp-secmon/wp-secmon.ini', $ini);
+
+// ---------------------------------------------------------------------------
 step('French');
 $ini = (string) file_get_contents('/etc/wp-secmon/wp-secmon.ini');
 file_put_contents('/etc/wp-secmon/wp-secmon.ini', $ini . "[general]\nlanguage = fr\n");

@@ -12,8 +12,6 @@ use WpSecMon\Site;
 abstract class Check
 {
     protected Context $ctx;
-    /** Site ids checked during this process (for the report totals). */
-    public static array $seen = [];
 
     public function __construct(Context $ctx)
     {
@@ -41,10 +39,7 @@ abstract class Check
             } catch (\Throwable $e) {
                 $alerts->siteError(static::name(), I18n::t('internal error: %s', $e->getMessage()));
             }
-            if (!isset(self::$seen[$site->id])) {
-                self::$seen[$site->id] = true;
-                $alerts->sitesChecked++;
-            }
+            $alerts->checked[$site->root] = true;
         }
         $alerts->setSite(null);
         $this->after($sites);

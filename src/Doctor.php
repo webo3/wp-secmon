@@ -108,6 +108,11 @@ final class Doctor
             $this->line(function_exists('mail') ? 'warn' : 'FAIL', function_exists('mail')
                 ? I18n::t('%s not found, using PHP mail()', $sendmail) : I18n::t('%s not found', $sendmail));
         }
+        if ($this->cfg->bool('alert_site_admins')) {
+            $cc = $this->cfg->list('alert_site_admins_cc');
+            $this->line('ok', $cc ? I18n::t('each site is reported to its WordPress administration address, with a copy to %s', implode(', ', $cc))
+                : I18n::t('each site is reported to its WordPress administration address'));
+        }
         foreach (['state_dir', 'log_dir'] as $k) {
             $dir = $this->cfg->str($k);
             $ok = is_dir($dir) ? is_writable($dir) : is_writable(dirname($dir));

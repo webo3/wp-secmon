@@ -112,6 +112,12 @@ final class Report
         }
     }
 
+    /** Whether an alert is about the monitoring itself, for the administrator of the server, not about a site. */
+    public static function isServerNote(array $r): bool
+    {
+        return $r['root'] === '(server)' || in_array($r['kind'], self::SERVER_KINDS, true);
+    }
+
     private static function status(int $level): string
     {
         return $level >= 3 ? I18n::t('Action required') : ($level === 2 ? I18n::t('Attention recommended') : I18n::t('No action needed'));
@@ -160,7 +166,7 @@ final class Report
         $bySite = [];
         $server = [];
         foreach ($this->records as $r) {
-            if ($r['root'] === '(server)' || in_array($r['kind'], self::SERVER_KINDS, true)) {
+            if (self::isServerNote($r)) {
                 $server[] = $r;
             } else {
                 $bySite[$r['root']][] = $r;

@@ -10,7 +10,7 @@ wp-secmon finds every WordPress install on the server and checks each site on a 
 - risky settings;
 - known vulnerabilities.
 
-Each run e-mails one report to root. The e-mail is written for people, not for logs: for each site, a status, what to do in plain language (for example "Update 5 plugins with known security holes" or "Confirm that each new administrator is legitimate"), a table of the plugins and themes to update, and one line per finding. You can forward it to the site owner as is. Reports are in English or French (`language` setting). File lists, CVEs and other details stay in `/var/log/wp-secmon`.
+Each run e-mails one report to root. The e-mail is written for people, not for logs: for each site, a status, what to do in plain language (for example "Update 5 plugins with known security holes" or "Confirm that each new administrator is legitimate"), a table of the plugins and themes to update, and one line per finding. You can forward it to the site owner as is, or have wp-secmon send each site administrator the report of their own sites (`alert_site_admins`). Reports are in English or French (`language` setting). File lists, CVEs and other details stay in `/var/log/wp-secmon`.
 
 It works on cPanel/CloudLinux/Imunify360 servers and on plain LAMP/LEMP servers. It ships as a single `wp-secmon.phar` and needs only PHP 7.4+, which is already there wherever WordPress runs, and WP-CLI, which the installer downloads if needed.
 
@@ -132,6 +132,7 @@ Every setting is documented in [`resources/etc/wp-secmon.ini`](resources/etc/wp-
 - `language`: `en` (default) or `fr`. The reports, the e-mails and the command output are in this language; `--lang` overrides it for one command. After a change, open problems are reported once more, in the new language.
 - `scan_paths[]`: where to look for WordPress installs (default `/home`). Add `/var/www` or `/srv/www` on LEMP/LAMP servers.
 - `alert_email`: default `root`. On cPanel, root's mail goes to the server contact address.
+- `alert_site_admins = yes`: send the report of each site to its WordPress administration e-mail address (Settings > General) instead of `alert_email`. An address with several sites gets one e-mail for all of them, and nothing about the other sites. `alert_site_admins_cc[]` adds a copy (Cc), for you or your team. `alert_email` still gets the notes about the monitoring itself, and the sites whose address is not known yet (the `integrity` check reads it) or is not a plain address. When a site changes its address, the report that says so goes to both the old and the new one.
 - `privileged_roles[]`: only these accounts are reported (default `administrator`, plus network super admins). Add `editor` or `shop_manager` if you consider them privileged.
 - `users_alert_new = all`: also report the other accounts created, deleted or modified. New ones are reported with `users_new_severity` (default `warning`).
 - `alert_command`: also push each report to Slack, ntfy, a ticketing system, etc. The text summary arrives on stdin. The command runs as root and the report quotes text controlled by the sites, so pass it along as data, never evaluate it.
