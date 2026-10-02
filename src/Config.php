@@ -72,10 +72,10 @@ final class Config
         'risky_default_roles' => ['administrator', 'editor', 'author', 'shop_manager'],
 
         // checksums check
-        'core_checksum_ignore' => [],
+        'core_checksum_ignore' => ['*/error_log'],
         'plugin_checksum_strict' => false,
         'plugin_checksum_exclude' => [],
-        'plugin_checksum_ignore' => [],
+        'plugin_checksum_ignore' => ['*/error_log'],
 
         // vulns check
         'vuln_api_url' => 'https://www.wpvulnerability.net',

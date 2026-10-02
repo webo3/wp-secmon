@@ -277,6 +277,20 @@ $g = ChecksumsCheck::groupPluginErrors([
     ['plugin_name' => 'cache', 'file' => 'cache/a.html', 'message' => 'File was added'],
 ], ['cache/cache/*']);
 ok('plugin errors grouped + ignored', array_keys($g) === ['akismet'] && count($g['akismet']) === 2, $g);
+// error_log files are ignored by default; look-alikes are not.
+$cfg = Config::fromArray([]);
+$core = ChecksumsCheck::parseCore(<<<'TXT'
+Warning: File should not exist: wp-admin/error_log
+Warning: File should not exist: wp-includes/js/error_log
+Warning: File should not exist: wp-admin/error_log.php
+TXT, $cfg->list('core_checksum_ignore'));
+ok('core error_log ignored by default', $core['extra'] === ['wp-admin/error_log.php'], $core);
+$g = ChecksumsCheck::groupPluginErrors([
+    ['plugin_name' => 'akismet', 'file' => 'error_log', 'message' => 'File was added'],
+    ['plugin_name' => 'akismet', 'file' => 'views/error_log', 'message' => 'File was added'],
+    ['plugin_name' => 'akismet', 'file' => 'my_error_log', 'message' => 'File was added'],
+], $cfg->list('plugin_checksum_ignore'));
+ok('plugin error_log ignored by default', $g === ['akismet' => [['File was added', 'my_error_log']]], $g);
 
 // ---------------------------------------------------------------- file scan
 $tmp = sys_get_temp_dir() . '/wpm-scan-' . getmypid();
