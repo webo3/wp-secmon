@@ -135,7 +135,7 @@ final class VulnsCheck extends Check
             } elseif ($v['fixed'] !== null && ($meta['fix'] === null || version_compare($v['fixed'], $meta['fix'], '>'))) {
                 $meta['fix'] = $v['fixed'];
             }
-            if (($risks[$v['severity']] ?? 0) > ($risks[$meta['risk']] ?? 0)) {
+            if (($risks[$v['severity'] ?? ''] ?? 0) > ($risks[$meta['risk'] ?? ''] ?? 0)) {
                 $meta['risk'] = $v['severity'];
             }
             if ($i >= 15) {

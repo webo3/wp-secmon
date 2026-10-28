@@ -17,7 +17,7 @@ It works on cPanel/CloudLinux/Imunify360 servers and on plain LAMP/LEMP servers.
 **Guarantees**
 
 - **Read-only.** wp-secmon never modifies a site: no files, no database rows, no cron, no outgoing HTTP from WordPress. The one thing it writes outside its own directories is the logs of each account's sites, in `~/logs/wp-secmon`, as that account and never inside a WordPress root. See [How it stays read-only](#how-it-stays-read-only).
-- **Never root.** Every WP-CLI call and every file read inside a site runs as the site's owner, with `--skip-plugins --skip-themes`. wp-secmon refuses to run anything as root, or as an account that is as good as root (`sudo`, `docker`, `lxd`...), even when misconfigured. Site code never gets a terminal, so it cannot reach the shell of an admin running wp-secmon by hand.
+- **Never root.** Every WP-CLI call and every file read inside a site runs as the site's owner, with `--skip-plugins --skip-themes`, and only when no other account can change the code WordPress loads. wp-secmon refuses to run anything as root, or as an account that is as good as root (`sudo`, `docker`, `lxd`...), even when misconfigured. Site code never gets a terminal, so it cannot reach the shell of an admin running wp-secmon by hand.
 
 ## Checks
 
@@ -156,7 +156,8 @@ Every setting is documented in [`resources/etc/wp-secmon.ini`](resources/etc/wp-
 A site is also not monitored, with the reason shown by `wp-secmon sites`, when:
 
 - **The account is as good as root:** its primary group is root, or it belongs to the root group or to one of `forbidden_groups` (`sudo`, `wheel`, `docker`, `lxd`...). Map the site to another account.
-- **Another account could swap the site:** every directory from `/` down to the WordPress root must be a real directory (not a symbolic link) owned by root or by the site's account. The directories above the site must not be writable by other accounts; the account's own group and sticky directories such as `/tmp` are fine. Otherwise another account could replace the site with its own code between discovery and a check, and wp-secmon would run that code as the site's owner. The check is repeated before every WP-CLI call.
+- **Another account could swap the site:** every directory from `/` down to the WordPress root must be a real directory (not a symbolic link) owned by root or by the site's account, and none of them, the WordPress root included, may be writable by other accounts. The account's own group is fine when it is private to the account (named after it, with no other member), and so are sticky directories such as `/tmp` above the site. Otherwise another account could replace the site with its own code between discovery and a check, and wp-secmon would run that code as the site's owner. The check is repeated before every WP-CLI call.
+- **Another account could change the code WordPress loads:** with `--skip-plugins --skip-themes`, WordPress still loads `wp-config.php`, `wp-includes`, `wp-admin`, the translations in `wp-content/languages` and drop-ins such as `wp-content/db.php`. These files, the folders that hold them (`wp-content` included) and the targets of their symbolic links must belong to root or to the site's account and be writable by no one else. Plugins, themes and uploads may stay writable. A common case: the files belong to a deploy account, but PHP-FPM runs as `www-data` and can write to `wp-content`. A web shell running as `www-data` could then drop a `db.php` that wp-secmon would run as the deploy account. For the site to be monitored, `www-data` may write to `wp-content/uploads`, `plugins` and `themes`, but not to `wp-content` itself or to the rest. The check is repeated at each run.
 
 To switch users, wp-secmon uses `setpriv` (util-linux; no PAM session, `no_new_privs`), falling back to `runuser`, `sudo` or `su`. On CloudLinux, `run_as_method = cagefs` runs the checks inside the user's CageFS. WP-CLI and the PHP binary must then be available inside the cage.
 
@@ -169,7 +170,8 @@ On the WP-CLI side:
   - drops every SQL statement that is not `SELECT`/`SHOW`/`DESCRIBE`/`EXPLAIN`/`SET`;
   - removes WP-Cron;
   - refuses outgoing HTTP from WordPress;
-  - keeps must-use plugins from loading. `--skip-plugins` does not cover them, and a malicious one could hide accounts from `wp user list`.
+  - keeps must-use plugins from loading. `--skip-plugins` does not cover them, and a malicious one could hide accounts from `wp user list`;
+  - keeps the `object-cache.php` and `advanced-cache.php` drop-ins from loading, for the same reason.
 - Update checks (which rewrite transients) are never triggered. The inventory is read with a small `wp eval` snippet ([`resources/wordpress/inventory.php`](resources/wordpress/inventory.php)).
 
 On the file and process side:

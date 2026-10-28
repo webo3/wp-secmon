@@ -322,6 +322,8 @@ return [
     "owned by '%s'; run wp-secmon as root to check it" => 'appartient à « %s »; lancez wp-secmon en tant que root pour le vérifier',
     "refusing to check a site as '%s': %s; map it to another account" => 'refus de vérifier un site en tant que « %s » : %s; associez-le à un autre compte',
     "%s, so the site could be swapped for code that would run as '%s'" => '%s, donc le site pourrait être remplacé par du code qui s’exécuterait en tant que « %s »',
+    "%s, so another account could change the code that would run as '%s'"
+        => '%s, donc un autre compte pourrait modifier le code qui s’exécuterait en tant que « %s »',
     '%s (checked as: %s)' => '%s (compte : %s)',
     '%d new WordPress install(s) found' => ['%d nouvelle installation WordPress trouvée', '%d nouvelles installations WordPress trouvées'],
     '%d WordPress install(s) no longer found' => ['%d installation WordPress disparue', '%d installations WordPress disparues'],
@@ -340,6 +342,8 @@ return [
     '%s is a symbolic link or not a directory' => '%s est un lien symbolique ou n’est pas un dossier',
     "%s belongs to '%s'" => '%s appartient à « %s »',
     '%s is writable by other accounts' => '%s est modifiable par d’autres comptes',
+    "%s is writable by the group '%s', which is not private to '%s'" => '%s est modifiable par le groupe « %s », qui n’est pas propre à « %s »',
+    '%s is a symbolic link to a missing file' => '%s est un lien symbolique vers un fichier absent',
     "unknown user '%s'" => 'utilisateur inconnu « %s »',
     "refusing to run a command as root (user '%s')" => 'refus d’exécuter une commande en tant que root (utilisateur « %s »)',
     'refusing to run as root' => 'refus de s’exécuter en tant que root',

@@ -10,7 +10,8 @@ namespace WpSecMon;
  *   --skip-packages               no WP-CLI packages from the user's home
  *   --no-color                    plain output (without posix, WP-CLI assumes a terminal)
  *   --exec=<readonly-guard>       SQL writes, WP-Cron and HTTP are blocked
- * plus WP_CLI_CONFIG_PATH=/dev/null (see RunAs).
+ * plus WP_CLI_CONFIG_PATH=/dev/null (see RunAs). Refused for a site whose
+ * code another account could change (RunAs::unsafeCode).
  */
 final class WpCli
 {
@@ -19,6 +20,8 @@ final class WpCli
     private string $tmp;
     private string $guard;
     private int $seq = 0;
+    /** Site id => why its code must not run as its account, or null: checked once per run. */
+    private array $unsafe = [];
 
     public function __construct(Config $cfg, RunAs $runAs, string $tmp)
     {
@@ -40,6 +43,13 @@ final class WpCli
 
     public function run(Site $site, array $args): WpResult
     {
+        if (!array_key_exists($site->id, $this->unsafe)) {
+            $pw = Util::passwd($site->user);
+            $this->unsafe[$site->id] = $pw !== null ? RunAs::unsafeCode($site->root, $site->config, $pw) : null;
+        }
+        if ($this->unsafe[$site->id] !== null) {
+            return new WpResult(RunAs::REFUSED, '', 'wp-secmon: ' . I18n::t("refusing to run as '%s': %s", $site->user, $this->unsafe[$site->id]) . "\n");
+        }
         $cmd = $this->cfg->str('wp_php') !== ''
             ? array_merge([$this->cfg->str('wp_php')], $this->cfg->list('wp_php_args'), [$this->cfg->str('wp_cli')])
             : [$this->cfg->str('wp_cli')];

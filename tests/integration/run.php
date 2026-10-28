@@ -435,6 +435,10 @@ expect('a logs folder others can write to is refused', $code === 0 && has($out, 
 chmod('/home/bob/logs', 0700);
 [$code, $out] = wpsecmon('integrity', '--no-mail', '--site', BOB);
 expect('kept and delivered once fixed', has((string) file_get_contents('/home/bob/logs/wp-secmon/alerts.log'), '1 plugin(s) activated'), $out);
+// Run by hand as root, the helper refuses: as root, it would pass its own checks anywhere.
+[$code] = sh(['wp-secmon', '__write-logs'], false, (string) json_encode(['home' => '/root', 'path' => 'logs/wp-secmon', 'append' => "x\n",
+    'files' => [], 'cap' => 1000]));
+expect('the logs helper refuses to write as root', $code === 1 && !file_exists('/root/logs'));
 
 // ---------------------------------------------------------------------------
 step('French');
@@ -527,11 +531,23 @@ fakeSite('/home/carol/public_html', 'carol');
 sh(['mkdir', '-p', '/home/bob/swap']);
 sh(['chown', 'bob:bob', '/home/bob/swap']);
 fakeSite('/home/bob/swap/site', 'alice');
+// Alice's files, but www-data (PHP-FPM, say) can write to wp-content: it could drop a db.php there that would run as alice.
+fakeSite('/home/alice/shop', 'alice');
+mkdir('/home/alice/shop/wp-content');
+chown('/home/alice/shop/wp-content', 'alice');
+chgrp('/home/alice/shop/wp-content', 'www-data');
+chmod('/home/alice/shop/wp-content', 0775);
+// Writable by alice's own group only: fine.
+fakeSite('/home/alice/team', 'alice');
+chmod('/home/alice/team', 0775);
 wpsecmon('discover');
 [, $out] = wpsecmon('sites');
 echo $out;
 expect('member of a root-equivalent group is refused', has($out, "/home/carol/public_html\n      refusing to check a site as 'carol': member of docker"), $out);
 expect('site another account could swap is refused', has($out, "/home/bob/swap/site\n      /home/bob belongs to 'bob'"), $out);
+expect('site whose code another account can change is refused', has($out, "/home/alice/shop\n      /home/alice/shop/wp-content is writable by the group"
+    . " 'www-data', which is not private to 'alice', so another account could change the code that would run as 'alice'"), $out);
+expect('site writable by its own group is monitored', (bool) preg_match('#^alice\s+-\s+-\s+/home/alice/team$#m', $out), $out);
 
 // Site code runs in a session of its own, so it cannot reach the terminal of an
 // admin running wp-secmon by hand; and a flood of output is cut short.
@@ -545,6 +561,16 @@ touch('/tmp/flood');
 [, $out] = wpsecmon('users', '--print', '--no-mail', '--site', ALICE);
 unlink('/tmp/flood');
 expect('output flood stopped and reported', has($out, 'wp user list failed: too much output'), $out);
+
+// WP-CLI loads the object-cache.php drop-in, but not under the guard: like a must-use plugin, it could hide accounts.
+put(ALICE . '/wp-content/object-cache.php', "<?php\n@touch('/tmp/object-cache-ran');\n", 'alice');
+wp('alice', ALICE, ['option', 'get', 'siteurl']);
+$loaded = file_exists('/tmp/object-cache-ran');
+@unlink('/tmp/object-cache-ran');
+[, $out] = wpsecmon('users', '--print', '--no-mail', '--site', ALICE);
+expect('the object-cache.php drop-in is not loaded', $loaded && !file_exists('/tmp/object-cache-ran') && has($out, '1 site(s) checked, 0 error(s)'),
+    'loaded without the guard: ' . var_export($loaded, true) . ', with it: ' . var_export(file_exists('/tmp/object-cache-ran'), true) . "\n$out");
+unlink(ALICE . '/wp-content/object-cache.php');
 
 step('update');
 // A newer release, served locally in the GitHub API format.

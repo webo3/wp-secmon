@@ -170,6 +170,20 @@ final class Util
         }
     }
 
+    /**
+     * A new private directory in the system temporary directory, deleted with
+     * rmTree() when done. Never one that already exists: /tmp is shared outside
+     * the systemd sandbox, and root would then use and delete someone else's.
+     */
+    public static function tempDir(): string
+    {
+        $dir = sys_get_temp_dir() . '/wp-secmon.' . bin2hex(random_bytes(6));
+        if (!@mkdir($dir, 0700)) {
+            throw new \RuntimeException(I18n::t('cannot create directory %s', $dir));
+        }
+        return $dir;
+    }
+
     public static function rmTree(string $dir): void
     {
         if (!is_dir($dir) || is_link($dir)) {
@@ -232,6 +246,22 @@ final class Util
         [$code, $out] = Proc::capture([$getent, 'group', $name], 10);
         $f = explode(':', trim($out));
         return $code === 0 && count($f) >= 3 ? (int) $f[2] : null;
+    }
+
+    /** Group entry for a gid: [name, members] or null. Uses posix when available, getent otherwise. */
+    public static function group(int $gid): ?array
+    {
+        if (function_exists('posix_getgrgid')) {
+            $gr = posix_getgrgid($gid);
+            return $gr ? ['name' => (string) $gr['name'], 'members' => array_map('strval', (array) $gr['members'])] : null;
+        }
+        $getent = self::which('getent');
+        if ($getent === null) {
+            return null;
+        }
+        [$code, $out] = Proc::capture([$getent, 'group', (string) $gid], 10);
+        $f = explode(':', trim($out));
+        return $code === 0 && count($f) >= 4 ? ['name' => $f[0], 'members' => $f[3] === '' ? [] : explode(',', $f[3])] : null;
     }
 
     /** Null when $path is owned by root and not group/world writable, else the problem. */

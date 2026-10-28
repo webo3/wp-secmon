@@ -27,7 +27,6 @@ final class Http
             }
             $body = curl_exec($ch);
             $error = curl_error($ch);
-            curl_close($ch);
             if ($body === false) {
                 Log::debug("GET $url failed: $error");
                 return null;

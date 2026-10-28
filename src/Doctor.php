@@ -156,8 +156,7 @@ final class Doctor
             if ($reg !== null) {
                 $this->line('ok', I18n::t('%d monitored, %d skipped (see wp-secmon sites)', count($reg['sites']), count($reg['skipped'])));
             }
-            $tmp = sys_get_temp_dir() . '/wp-secmon.' . bin2hex(random_bytes(6));
-            Util::mkdir($tmp);
+            $tmp = Util::tempDir();
             try {
                 $wp = new WpCli($this->cfg, $runAs, $tmp);
                 $list = [];

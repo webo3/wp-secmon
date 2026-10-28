@@ -128,7 +128,7 @@ final class VulnDb
         }
         $out = array_values($unique);
         usort($out, static function ($a, $b) {
-            return [self::SEVERITY_RANK[$a['severity']] ?? 4, $a['title']] <=> [self::SEVERITY_RANK[$b['severity']] ?? 4, $b['title']];
+            return [self::SEVERITY_RANK[$a['severity'] ?? ''] ?? 4, $a['title']] <=> [self::SEVERITY_RANK[$b['severity'] ?? ''] ?? 4, $b['title']];
         });
         return $out;
     }

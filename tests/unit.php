@@ -423,14 +423,76 @@ ok('parent writable by anyone', RunAs::unsafePath("$tmp/www/site", $me) === "$tm
 chmod("$tmp/www", 01777);
 ok('sticky parent', RunAs::unsafePath("$tmp/www/site", $me) === null);
 chmod("$tmp/www", 0755);
-chmod("$tmp/www/site", 0777);
-ok('site root itself may be writable', RunAs::unsafePath("$tmp/www/site", $me) === null);
+chmod("$tmp/www/site", 01777);
+ok('site root writable by others refused, even sticky', RunAs::unsafePath("$tmp/www/site", $me) === "$tmp/www/site is writable by other accounts",
+    RunAs::unsafePath("$tmp/www/site", $me));
+chmod("$tmp/www/site", 0700);
+// A group that is not the account's own (named after it, no other member): its members could swap the site.
+chmod("$tmp/www", 0775);
+$why = (string) RunAs::unsafePath("$tmp/www/site", ['name' => 'wpm-no-such-account'] + $me);
+ok('group shared with other accounts refused', strpos($why, "$tmp/www is writable by the group '") === 0
+    && substr($why, -strlen(", which is not private to 'wpm-no-such-account'")) === ", which is not private to 'wpm-no-such-account'", $why);
+chmod("$tmp/www", 0755);
 symlink("$tmp/www/site", "$tmp/www/link");
 ok('symlinked site', RunAs::unsafePath("$tmp/www/link", $me) === "$tmp/www/link is a symbolic link or not a directory");
 if ($me['uid'] !== 0) {
     ok('directory of another account', strpos((string) RunAs::unsafePath("$tmp/www/site", ['uid' => $me['uid'] + 1] + $me), ' belongs to ') !== false);
 }
 Util::rmTree($tmp);
+
+// The PHP WordPress loads before any plugin must not be changeable by another account.
+$tmp = realpath(sys_get_temp_dir()) . '/wpm-code-' . getmypid();
+$wp = "$tmp/www/site";
+foreach (['wp-includes/sub', 'wp-admin', 'wp-content/languages', 'wp-content/plugins/p', 'wp-content/uploads'] as $dir) {
+    mkdir("$wp/$dir", 0755, true);
+}
+mkdir("$tmp/shared", 0755);
+foreach (["$wp/wp-config.php", "$wp/wp-load.php", "$wp/wp-settings.php", "$wp/wp-includes/version.php", "$wp/wp-includes/sub/x.php",
+    "$wp/wp-admin/admin.php", "$wp/wp-content/languages/fr_FR.l10n.php", "$wp/wp-content/plugins/p/p.php", "$tmp/shared/object-cache.php"] as $file) {
+    file_put_contents($file, "<?php\n");
+    chmod($file, 0644);
+}
+$code = static function (array $pw = []) use ($wp, $me): ?string {
+    return RunAs::unsafeCode($wp, "$wp/wp-config.php", $pw + $me);
+};
+ok('code nobody else can change', $code() === null, $code());
+chmod("$wp/wp-content", 0777);
+ok('wp-content writable by others refused', $code() === "$wp/wp-content is writable by other accounts", $code());
+chmod("$wp/wp-content", 0755);
+chmod("$wp/wp-includes/sub/x.php", 0666);
+ok('core file writable by others refused', $code() === "$wp/wp-includes/sub/x.php is writable by other accounts", $code());
+chmod("$wp/wp-includes/sub/x.php", 0644);
+chmod("$wp/wp-content/languages/fr_FR.l10n.php", 0666);
+ok('translation writable by others refused', $code() === "$wp/wp-content/languages/fr_FR.l10n.php is writable by other accounts", $code());
+chmod("$wp/wp-content/languages/fr_FR.l10n.php", 0644);
+chmod("$wp/wp-content/plugins", 0777);
+chmod("$wp/wp-content/plugins/p/p.php", 0666);
+chmod("$wp/wp-content/uploads", 0777);
+ok('plugins and uploads are not loaded, so may stay writable', $code() === null, $code());
+chmod("$wp/wp-content/plugins", 0755);
+chmod("$wp/wp-content/plugins/p/p.php", 0644);
+chmod("$wp/wp-content/uploads", 0755);
+symlink("$tmp/shared/object-cache.php", "$wp/wp-content/object-cache.php");
+ok('drop-in linked to a safe place', $code() === null, $code());
+chmod("$tmp/shared", 0777);
+ok('drop-in linked into a folder others can write to refused', $code() === "$tmp/shared is writable by other accounts", $code());
+chmod("$tmp/shared", 0755);
+symlink("$tmp/shared/db.php", "$wp/wp-content/db.php");
+ok('drop-in linked to a missing file refused', $code() === "$wp/wp-content/db.php is a symbolic link to a missing file", $code());
+unlink("$wp/wp-content/db.php");
+symlink("$wp/wp-includes", "$wp/wp-includes/sub/loop");
+ok('symbolic link loop walked once', $code() === null, $code());
+chmod("$wp/wp-config.php", 0666);
+ok('wp-config.php writable by others refused', $code() === "$wp/wp-config.php is writable by other accounts", $code());
+chmod("$wp/wp-config.php", 0644);
+if ($me['uid'] !== 0) {
+    ok('code of another account refused', strpos((string) $code(['uid' => $me['uid'] + 1]), ' belongs to ') !== false, $code(['uid' => $me['uid'] + 1]));
+}
+Util::rmTree($tmp);
+
+$dirs = [Util::tempDir(), Util::tempDir()];
+ok('new private temporary directories', is_dir($dirs[0]) && (fileperms($dirs[0]) & 0777) === 0700 && $dirs[0] !== $dirs[1]);
+array_map('rmdir', $dirs);
 
 // ---------------------------------------------------------------- output limits
 $out = tempnam(sys_get_temp_dir(), 'wpg');
@@ -480,7 +542,9 @@ $cfg = Config::fromArray(['state_dir' => $state, 'log_dir' => $state, 'alert_rep
 $site = new WpSecMon\Site('/home/a/public_html', '/home/a/public_html/wp-config.php', 'a');
 $raw = static function (Alerts $a): array {
     $p = new ReflectionProperty(Alerts::class, 'records');
-    $p->setAccessible(true);
+    if (PHP_VERSION_ID < 80100) {
+        $p->setAccessible(true);
+    }
     return $p->getValue($a);
 };
 $records = static function (Alerts $a) use ($raw): array {

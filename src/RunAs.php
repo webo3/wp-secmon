@@ -15,14 +15,17 @@ namespace WpSecMon;
  * privileges through setuid binaries.
  *
  * Accounts that are as good as root (primary group root, members of
- * forbidden_groups) are refused too, and so are sites whose path could be
- * swapped by another account (see unsafePath()).
+ * forbidden_groups) are refused too, and so are sites whose path or code
+ * could be changed by another account (see unsafePath() and unsafeCode()).
  */
 final class RunAs
 {
     public const REFUSED = 125;
     /** Exit code when a command wrote more than max_output_mb: 128 + SIGXFSZ, as prlimit makes it. */
     public const TOO_MUCH_OUTPUT = 153;
+    /** Drop-ins WordPress can load from wp-content before any plugin (see unsafeCode()). */
+    private const BOOT_DROPINS = ['db.php', 'object-cache.php', 'advanced-cache.php', 'sunrise.php', 'maintenance.php', 'db-error.php',
+        'fatal-error-handler.php', 'php-error.php'];
 
     private string $method;
     private string $userPath;
@@ -164,12 +167,13 @@ final class RunAs
     /**
      * Why site code under $dir must not run as the account $pw, or null.
      *
-     * Whoever can rename a directory on the way to $dir can swap the site for
-     * their own code, which would then run as $pw. So every directory from /
-     * down to $dir must be a real directory (not a symbolic link) owned by root
-     * or by the account, and those above $dir must not be writable by anyone
-     * else: group writes are fine for the account's own group, world writes
-     * only with the sticky bit.
+     * Whoever can rename a directory on the way to $dir, or write to $dir
+     * itself, can swap the site for their own code, which would then run as
+     * $pw. So every directory from / down to $dir must be a real directory (not
+     * a symbolic link) owned by root or by the account, and none may be
+     * writable by anyone else (see writableBy()). Only the directories above
+     * $dir may be writable with the sticky bit, which keeps others from
+     * renaming what they do not own.
      */
     public static function unsafePath(string $dir, array $pw): ?string
     {
@@ -189,13 +193,114 @@ final class RunAs
                 $owner = Util::passwd((int) $st['uid']);
                 return I18n::t("%s belongs to '%s'", $path, $owner['name'] ?? $st['uid']);
             }
-            $above = $i < count($parts) - 1;
-            $sticky = ($st['mode'] & 01000) !== 0;
-            if ($above && !$sticky && (($st['mode'] & 0002) || (($st['mode'] & 0020) && $st['gid'] !== $pw['gid']))) {
-                return I18n::t('%s is writable by other accounts', $path);
+            $sticky = $i < count($parts) - 1 && ($st['mode'] & 01000) !== 0;
+            if (!$sticky && ($why = self::writableBy($path, $st, $pw)) !== null) {
+                return $why;
             }
         }
         return null;
+    }
+
+    /**
+     * Why the PHP that WP-CLI loads from the site at $root must not run as the
+     * account $pw, or null. The site directory itself is unsafePath()'s.
+     *
+     * --skip-plugins, --skip-themes and the read-only guard still leave
+     * wp-config.php, core (wp-includes, wp-admin), translations and drop-ins
+     * such as db.php. If another account can change one of them (www-data,
+     * say, when the files belong to a deploy account but PHP-FPM runs as
+     * www-data and can write to wp-content), it could run code as $pw through
+     * wp-secmon. So each of them, the directories that hold them and the
+     * target of a symbolic link must belong to root or the account and be
+     * writable by nobody else. Plugins, themes and uploads are not loaded and
+     * may stay writable. A WP_CONTENT_DIR outside the WordPress root is not
+     * covered.
+     */
+    public static function unsafeCode(string $root, string $config, array $pw): ?string
+    {
+        clearstatcache(true);
+        // [path, whether to go through it when it is a directory]
+        $todo = [[$config, false], ["$root/.maintenance", false], ["$root/wp-load.php", false], ["$root/wp-settings.php", false],
+            ["$root/wp-content", false], ["$root/wp-includes", true], ["$root/wp-admin", true], ["$root/wp-content/languages", true]];
+        foreach (self::BOOT_DROPINS as $name) {
+            $todo[] = ["$root/wp-content/$name", false];
+        }
+        $walked = $parents = [];
+        while ($todo) {
+            [$path, $walk] = array_pop($todo);
+            $real = realpath($path);
+            if ($real === false) {
+                if (is_link($path)) {
+                    // Not loaded now, but whoever can create its target could have it loaded.
+                    return I18n::t('%s is a symbolic link to a missing file', $path);
+                }
+                continue; // missing: it could only be created in a directory checked here
+            }
+            $st = @lstat($real);
+            if ($st === false) {
+                return I18n::t('cannot stat %s', $real);
+            }
+            if ($st['uid'] !== 0 && $st['uid'] !== $pw['uid']) {
+                $owner = Util::passwd((int) $st['uid']);
+                return I18n::t("%s belongs to '%s'", $real, $owner['name'] ?? $st['uid']);
+            }
+            if (($why = self::writableBy($real, $st, $pw)) !== null) {
+                return $why;
+            }
+            // Reached through a symbolic link: the directories on the way to its target could be swapped too.
+            $parent = dirname($real);
+            if ($real !== $path && !isset($parents[$parent])) {
+                $why = self::unsafePath($parent, $pw);
+                if ($why !== null) {
+                    return $why;
+                }
+                $parents[$parent] = true;
+            }
+            if ($walk && ($st['mode'] & 0170000) === 0040000 && !isset($walked[$real])) {
+                $walked[$real] = true;
+                foreach (@scandir($real) ?: [] as $name) {
+                    if ($name !== '.' && $name !== '..') {
+                        $todo[] = ["$path/$name", true];
+                    }
+                }
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Why accounts other than $pw (and root) can write to $path, whose lstat()
+     * is $st, or null. Group writes are fine only for the account's own group.
+     */
+    private static function writableBy(string $path, array $st, array $pw): ?string
+    {
+        if ($st['mode'] & 0002) {
+            return I18n::t('%s is writable by other accounts', $path);
+        }
+        if (($st['mode'] & 0020) && !self::ownGroup((int) $st['gid'], $pw)) {
+            $group = Util::group((int) $st['gid']);
+            return I18n::t("%s is writable by the group '%s', which is not private to '%s'", $path, $group['name'] ?? $st['gid'], $pw['name']);
+        }
+        return null;
+    }
+
+    /**
+     * Whether $gid is the account's own group: its primary group, named after
+     * it and without other members (user private groups). A primary group that
+     * accounts share, such as "users", lets each of them write.
+     */
+    private static function ownGroup(int $gid, array $pw): bool
+    {
+        if ($gid !== $pw['gid']) {
+            return false;
+        }
+        static $cache = [];
+        $key = "$gid\0{$pw['name']}";
+        if (!isset($cache[$key])) {
+            $group = Util::group($gid);
+            $cache[$key] = $group !== null && $group['name'] === $pw['name'] && array_diff($group['members'], [$pw['name']]) === [];
+        }
+        return $cache[$key];
     }
 
     /**

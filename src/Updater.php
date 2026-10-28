@@ -76,8 +76,7 @@ final class Updater
         // The new installer runs with the timers' PHP and keeps it for them.
         $php = Installer::timersPhp() ?? PHP_BINARY;
         $cmd = [$php, '-d', 'disable_functions=', '-d', 'open_basedir='];
-        $dir = sys_get_temp_dir() . '/wp-secmon.' . bin2hex(random_bytes(6));
-        Util::mkdir($dir);
+        $dir = Util::tempDir();
         try {
             file_put_contents("$dir/wp-secmon.phar", $phar);
             $cmd = array_merge($cmd, ["$dir/wp-secmon.phar", 'install', "--php=$php", '--lang=' . I18n::language()],

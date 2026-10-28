@@ -231,8 +231,12 @@ final class UserLogs
         if (!$valid) {
             return [self::BAD_INPUT, ['error' => 'invalid input']];
         }
-
         $uid = Util::effectiveUid();
+        // Only ever as the account (RunAs refuses root): root would pass every check below, anywhere.
+        if ($uid === 0) {
+            return [1, ['error' => 'refusing to write as root', 'path' => $home]];
+        }
+
         $dir = $home;
         foreach (array_merge([''], explode('/', $path)) as $i => $part) {
             $dir = $i === 0 ? $home : "$dir/$part";

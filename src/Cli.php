@@ -234,8 +234,7 @@ TXT);
         Util::mkdir($this->cfg->str('state_dir'));
         Util::mkdir($this->cfg->str('state_dir') . '/locks');
         Util::mkdir($this->cfg->str('log_dir'), 0750);
-        $this->tmp = sys_get_temp_dir() . '/wp-secmon.' . bin2hex(random_bytes(6));
-        Util::mkdir($this->tmp);
+        $this->tmp = Util::tempDir();
     }
 
     /** Non-blocking lock per check; the descriptor is close-on-exec so site processes never inherit it. */

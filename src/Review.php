@@ -157,7 +157,7 @@ final class Review
     private function about(array $file, ?array $was): void
     {
         $about = $file['link'] !== null ? I18n::t('symbolic link to %s', Util::oneLine((string) $file['link']))
-            : I18n::n((int) $file['size'], '%d byte', '%d bytes', (int) $file['size']) . ', sha256 ' . $file['sha256'];
+            : I18n::n((int) $file['size'], '%d byte', '%d bytes', (int) $file['size']) . ', sha256 ' . Util::oneLine((string) $file['sha256']);
         self::say('  ' . I18n::t('%s, modified %s', $about, date('Y-m-d H:i', (int) $file['mtime'])));
         if ($was !== null) {
             $on = date('Y-m-d H:i', (int) ($was['accepted'] ?? 0));

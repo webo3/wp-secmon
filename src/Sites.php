@@ -314,6 +314,10 @@ final class Sites
         if ($why !== null) {
             return $no(I18n::t("%s, so the site could be swapped for code that would run as '%s'", $why, $user));
         }
+        $why = RunAs::unsafeCode($root, $config, $pw);
+        if ($why !== null) {
+            return $no(I18n::t("%s, so another account could change the code that would run as '%s'", $why, $user));
+        }
         return ['site' => new Site($root, $config, $user), 'orphan' => false, 'reason' => ''];
     }
 
