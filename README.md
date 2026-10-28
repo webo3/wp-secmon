@@ -39,7 +39,7 @@ It works on cPanel/CloudLinux/Imunify360 servers and on plain LAMP/LEMP servers.
 
 A report is e-mailed when it contains at least one alert at `mail_min_severity` (default: warning). The e-mail is HTML with a plain-text version of the same summary. Set `mail_format = text` to get the full details in plain text instead. The full details of each report are also kept in `/var/log/wp-secmon/last-report-*.txt`, and every alert is written to `/var/log/wp-secmon/alerts.log` and to the journal.
 
-**Logs for each account:** the account a site is checked as (the cPanel account, or the owner of the WordPress files) gets the alerts and full details of its own sites in `~/logs/wp-secmon`: `alerts.log` (rotated to `alerts.log.1` at 1 MB) and `last-report-*.txt`. Nothing about other accounts or the server itself goes there. The folder appears with the account's first alert. The files are written as the account, never as root, and only when every folder on the way belongs to the account and no one else can write to it. Accounts whose home is inside a WordPress root, or that cannot create the folder (such as `www-data` with a root-owned `/var/www`), get nothing. Set `user_log_dir` to another folder of the home, or leave it empty to turn this off.
+**Logs for each account:** the account a site is checked as (the cPanel account, or the owner of the WordPress files) gets the alerts and full details of its own sites in `~/logs/wp-secmon`: `alerts.log` (rotated to `alerts.log.1` at 1 MB) and `last-report-*.txt`. Nothing about other accounts or the server itself goes there. The folder appears with the account's first alert. The files are written as the account, never as root, and only when every folder on the way belongs to the account and no one else can write to it. Accounts whose home is inside a WordPress root, or that cannot create the folder (such as `www-data` with a root-owned `/var/www`), get nothing. Set `user_log_dir` to another folder of the home, or leave it empty to turn this off. The account can also check its sites itself: see [Running it as the account of a site](#running-it-as-the-account-of-a-site).
 
 **One-off changes** (a new admin, a modified `wp-config.php`) are reported once, and the new state becomes the baseline.
 
@@ -71,7 +71,7 @@ curl -fsSLO https://github.com/webo3/wp-secmon/releases/latest/download/wp-secmo
 
 This does the following:
 
-- copies the phar to `/usr/local/sbin/wp-secmon`;
+- copies the phar to `/usr/local/bin/wp-secmon`;
 - creates `/etc/wp-secmon/wp-secmon.ini` and `/etc/wp-secmon/site-users.map`;
 - installs a logrotate rule, the `wp-secmon@.service` template and five timers, and enables the timers (add `--no-enable` to skip that);
 - downloads WP-CLI to `/usr/local/bin/wp` (or `wp_cli`) when nothing is there, and checks it against the SHA-512 published by WP-CLI. If the download fails, the install goes on and tells you to install WP-CLI yourself.
@@ -90,6 +90,7 @@ wp-secmon all --no-mail         # records the baselines and prints the first rep
 
 - your configuration is kept, and the new defaults are written to `*.dist` next to it;
 - timers stay enabled or disabled as they were, and only timers added by the new version are enabled;
+- older versions installed the program in `/usr/local/sbin`: it moves to `/usr/local/bin`, and a symbolic link stays in its place, so your scripts keep working;
 - the upgrade refuses to run while a check is running, because replacing the phar would break it. Try again when the check has finished.
 
 **Uninstall:** `wp-secmon uninstall`. Add `--purge` to also delete `/etc/wp-secmon`, `/var/lib/wp-secmon` and `/var/log/wp-secmon`. WP-CLI is left in place, and so are the logs in the accounts' homes.
@@ -117,7 +118,7 @@ wp-secmon [options] <command>
 
 **Rescanning one site:** `wp-secmon all --site /home/alice/public_html` examines that site again (after a change to `site-users.map`, for example) and runs every check on it, without searching the whole server. It reports only on that site. `wp-secmon discover --site PATH` only updates the site list. Either way, a site must already be in the list: run `wp-secmon discover` to find new ones.
 
-If the CLI `php.ini` disables `proc_open`, run manual commands as `php -d disable_functions= /usr/local/sbin/wp-secmon <command>`. The timers already do this.
+If the CLI `php.ini` disables `proc_open`, run manual commands as `php -d disable_functions= /usr/local/bin/wp-secmon <command>`. The timers already do this.
 
 To change a schedule, use `systemctl edit wp-secmon-users.timer`. For example, to check accounts every 15 minutes:
 
@@ -126,6 +127,26 @@ To change a schedule, use `systemctl edit wp-secmon-users.timer`. For example, t
 OnCalendar=
 OnCalendar=*:0/15
 ```
+
+### Running it as the account of a site
+
+A cPanel account, or any account that owns WordPress sites, can run wp-secmon itself (over SSH, for example) to check its sites when it wants and to review the files in their uploads:
+
+```sh
+wp-secmon all       # checks the sites in your home and prints the report
+wp-secmon review    # goes through the executable files found in uploads
+```
+
+Run by an account other than root, wp-secmon:
+
+- checks only the sites in the account's home that belong to the account, as the account (`--site PATH` picks some of them);
+- keeps its own site list, baselines and reports in `~/.wp-secmon`, and prints the report instead of e-mailing it;
+- uses the default settings, since only root can read `/etc/wp-secmon/wp-secmon.ini`: add `--lang fr` for French, or `-c FILE` for a configuration of the account's own;
+- stays read-only, with the same guard around WP-CLI as the timers.
+
+It does not change what root reports. Its baselines are its own, so the account's first run records them, like the first run on the server, and the files the account accepts with `wp-secmon review` are still reported by the timers. Site code runs as the account, so a web shell can do anything the account can do, accept itself included: what root reports stays out of its reach. The account finds root's reports on its sites in `~/logs/wp-secmon`. To stop root from reporting a file, the server administrator runs `wp-secmon review --site PATH`.
+
+On CloudLinux, the account's shell runs in its CageFS, which must include `/usr/local/bin/wp-secmon` and WP-CLI.
 
 ## Configuration
 
@@ -181,7 +202,7 @@ On the file and process side:
 - Commands run without a shell (`proc_open` with an argument array), with a clean environment, `cwd=/`, no stdin (wp-secmon's own helper that writes the logs of an account reads them from a file opened by root) and a timeout. Output goes to files, so a process left behind by site code cannot hang a run.
 - Site code runs in a new session without a controlling terminal (`setsid`). Without `setsid`, wp-secmon refuses to check sites from a terminal.
 - Each output file is capped at `max_output_mb` (`prlimit`), so a site cannot fill the disk or exhaust wp-secmon's memory and stop the report.
-- The systemd service mounts `/home`, `/var/www` and `/srv` read-only for the whole process tree, WP-CLI included. It also uses `NoNewPrivileges`, `ProtectSystem=full` and `PrivateTmp`. The logs of each account are copied to its home after the check (`ExecStopPost`), outside that sandbox: that step only runs wp-secmon's own helper, as each account, never site code.
+- The systemd service mounts `/home`, `/var/www` and `/srv` read-only for the whole process tree, WP-CLI included. It also uses `NoNewPrivileges`, `ProtectSystem=full` and `PrivateTmp`. The e-mails are sent, and the logs of each account copied to its home, after the check (`ExecStopPost`), outside that sandbox: that step only runs sendmail, and wp-secmon's own helper as each account, never site code. This is also what lets setgid sendmail wrappers such as cPanel's work.
 
 **Limits:**
 
@@ -192,7 +213,8 @@ On the file and process side:
 
 | Path | Content |
 |---|---|
-| `/usr/local/sbin/wp-secmon` | The phar (root-owned, mode 0755: site owners execute it for the file scan) |
+| `/usr/local/bin/wp-secmon` | The phar (root-owned, mode 0755: site owners execute it for the file scan and to check their own sites) |
+| `/usr/local/sbin/wp-secmon` | Symbolic link to it, on servers upgraded from an older version |
 | `/usr/local/bin/wp` | WP-CLI, when the installer downloaded it (root-owned, mode 0755) |
 | `/etc/wp-secmon/wp-secmon.ini`, `site-users.map` | Configuration (root-owned and not writable by others, or wp-secmon refuses to run) |
 | `/etc/systemd/system/wp-secmon@.service`, `wp-secmon-*.timer` | Service template and timers |
@@ -203,6 +225,7 @@ On the file and process side:
 | `/var/log/wp-secmon/last-report-*.txt` | Full details of the last report of each check (the e-mail is a summary) |
 | `/var/lib/wp-secmon/outbox/` | Logs waiting to be copied to the accounts |
 | `~/logs/wp-secmon/` (each account) | `alerts.log`, `alerts.log.1` and `last-report-*.txt` of the account's own sites, owned by the account |
+| `~/.wp-secmon/` (an account running wp-secmon itself) | Site list, baselines, open alerts and reports of the account's own runs, never read by root |
 
 To reset the baselines of one site, delete its directory under `/var/lib/wp-secmon/sites/`. Its `site.json` file shows which site it is.
 
@@ -242,7 +265,7 @@ The end-to-end test builds the phar and installs it. It then creates real sites 
 - a must-use plugin that tries to hide an account;
 - an account in the `docker` group, a site inside another account's directory, and a site that floods its output.
 
-It checks that every attack is reported and that site code runs in a session of its own. It also checks that database checksums and file metadata are identical before and after each wp-secmon run, that the malicious mu-plugin never executed, and that uninstalling leaves the sites untouched.
+It checks that every attack is reported and that site code runs in a session of its own. It also checks that database checksums and file metadata are identical before and after each wp-secmon run, that the malicious mu-plugin never executed, and that uninstalling leaves the sites untouched. A site's account also runs wp-secmon itself: it checks and reviews only its own site, and root still reports the files it accepted.
 
 ## License
 

@@ -536,6 +536,28 @@ foreach (['/var/log/x', 'logs/../../etc', './logs', 'logs/', 'logs//x', 'my logs
     }
 }
 
+// An account running wp-secmon itself: its own sites, state and reports, in its home.
+$tmp = realpath(sys_get_temp_dir()) . '/wpm-account-' . getmypid();
+mkdir("$tmp/home/me", 0700, true);
+$cfg = Config::fromArray(['language' => 'fr', 'scan_paths' => ['/home', '/var/www'], 'state_dir' => '/var/lib/x'])->forAccount('me', "$tmp/home/me/");
+ok('an account keeps its state and reports in its home', $cfg->str('state_dir') === "$tmp/home/me/.wp-secmon"
+    && $cfg->str('log_dir') === "$tmp/home/me/.wp-secmon", [$cfg->str('state_dir'), $cfg->str('log_dir')]);
+ok('an account checks the sites in its home', $cfg->list('scan_paths') === ["$tmp/home/me"] && $cfg->str('language') === 'fr', $cfg->list('scan_paths'));
+ok('an account gets no copy of its own logs', $cfg->str('user_log_dir') === '');
+$refused = static function (string $home): string {
+    try {
+        Config::fromArray([])->forAccount('me', $home);
+        return '';
+    } catch (RuntimeException $e) {
+        return $e->getMessage();
+    }
+};
+file_put_contents("$tmp/home/wp-load.php", "<?php\n");
+ok('not for a home inside a WordPress root', $refused("$tmp/home/me") === "$tmp/home/me/.wp-secmon is inside the WordPress root $tmp/home,"
+    . ' where its reports could be downloaded: run wp-secmon as root', $refused("$tmp/home/me"));
+ok('not without a home', $refused('/') === "'me' has no home directory: run wp-secmon as root" && $refused("$tmp/none") !== '');
+Util::rmTree($tmp);
+
 // ---------------------------------------------------------------- alerts
 $state = sys_get_temp_dir() . '/wpg-test-' . getmypid();
 $cfg = Config::fromArray(['state_dir' => $state, 'log_dir' => $state, 'alert_repeat_hours' => 24]);
@@ -688,6 +710,17 @@ $run($admins)->finish();
 $mail = (string) @file_get_contents("$state/mail.txt");
 ok('one e-mail per recipient', preg_match_all('/^To: (.+)$/m', $mail, $to) === 4
     && $to[1] === ['root', 'new@a.example', 'old@a.example', 'Owner@B.example'] && substr_count($mail, "\nCc: ") === 3, $to[1]);
+// Under systemd the unit sends them after the check (setgid sendmail wrappers do not work in its sandbox).
+unlink("$state/mail.txt");
+putenv('WP_SECMON_DEFER_DELIVERY=1');
+$a = $run($admins);
+$a->finish();
+ok('e-mails queued when delivery is deferred', !is_file("$state/mail.txt") && count(glob("$state/mail/*.json") ?: []) === 4);
+$a->sendQueued();
+putenv('WP_SECMON_DEFER_DELIVERY');
+$sent = (string) @file_get_contents("$state/mail.txt");
+ok('queued e-mails sent in order', preg_match_all('/^To: (.+)$/m', $sent, $to) === 4 && $to[1] === ['root', 'new@a.example', 'old@a.example', 'Owner@B.example']
+    && substr_count($sent, "\nCc: ") === 3 && glob("$state/mail/*.json") === [], $to[1]);
 Util::rmTree($state);
 
 // ---------------------------------------------------------------- logs copied to the accounts

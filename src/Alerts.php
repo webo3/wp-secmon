@@ -484,11 +484,44 @@ final class Alerts
         return [["Content-Type: multipart/alternative; boundary=\"$boundary\"", 'Content-Transfer-Encoding: 8bit'], $body];
     }
 
+    /** Sends the e-mails queued by mail(). Run by the systemd unit after each check, outside its sandbox (`__deliver`). */
+    public function sendQueued(): void
+    {
+        foreach (glob($this->stateDir . '/mail/*.json') ?: [] as $file) {
+            $m = Util::readJson($file);
+            // Two checks that end together both get here: the one that removes the file sends it.
+            if (@unlink($file) && $m !== null) {
+                $this->send((string) ($m['to'] ?? ''), (array) ($m['cc'] ?? []), (string) ($m['subject'] ?? ''),
+                    (array) ($m['headers'] ?? []), (string) ($m['body'] ?? ''));
+            }
+        }
+    }
+
     /**
+     * Sends an e-mail now, or queues it when the systemd unit sends it after
+     * the check (WP_SECMON_DEFER_DELIVERY): in the unit, NoNewPrivileges keeps
+     * setgid sendmail wrappers such as cPanel's from working, and the mailboxes
+     * in the homes are read-only.
      * @param string[] $cc
      * @param string[] $mimeHeaders Content-Type and Content-Transfer-Encoding
      */
     private function mail(string $to, array $cc, string $subject, array $mimeHeaders, string $body): void
+    {
+        if ((string) getenv('WP_SECMON_DEFER_DELIVERY') === '') {
+            $this->send($to, $cc, $subject, $mimeHeaders, $body);
+            return;
+        }
+        // Named by time, so that they are sent in order.
+        Util::writeJson(sprintf('%s/mail/%.6F-%s.json', $this->stateDir, microtime(true), bin2hex(random_bytes(4))),
+            ['to' => $to, 'cc' => $cc, 'subject' => $subject, 'headers' => $mimeHeaders, 'body' => $body]);
+        Log::debug("report to $to queued, sent after the check");
+    }
+
+    /**
+     * @param string[] $cc
+     * @param string[] $mimeHeaders
+     */
+    private function send(string $to, array $cc, string $subject, array $mimeHeaders, string $body): void
     {
         $sendmail = $this->cfg->str('sendmail');
         $copies = $cc ? 'Cc: ' . implode(', ', $cc) . "\n" : '';

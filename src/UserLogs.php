@@ -12,7 +12,7 @@ namespace WpSecMon;
  * publish() delivers them as the account, through the hidden
  * `wp-secmon __write-logs` command (write()): root never writes in a directory
  * an account controls. Under systemd the checks see the homes read-only, so
- * the unit delivers after each check (ExecStopPost, `__publish-logs`).
+ * the unit delivers after each check (ExecStopPost, `__deliver`).
  *
  * Nothing is copied inside a WordPress root, where the logs could be
  * downloaded, nor for accounts whose home cannot take them (such as www-data

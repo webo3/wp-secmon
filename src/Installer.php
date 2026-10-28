@@ -10,14 +10,17 @@ namespace WpSecMon;
  *   php wp-secmon.phar install [--php=/path/to/php] [--no-enable]
  *   wp-secmon uninstall [--purge]
  *
- * Installing copies the phar to /usr/local/sbin/wp-secmon, creates the
+ * Installing copies the phar to /usr/local/bin/wp-secmon, creates the
  * configuration (existing files are kept), installs the systemd timers and
  * downloads WP-CLI when wp_cli points to nothing. Running it again with a
  * newer phar upgrades in place (see also Updater).
  */
 final class Installer
 {
-    public const BIN = '/usr/local/sbin/wp-secmon';
+    /** In bin, not sbin: site owners run it too, for the file scan and to check their own sites. */
+    public const BIN = '/usr/local/bin/wp-secmon';
+    /** Where older versions installed it. An upgrade leaves a symbolic link to BIN there. */
+    public const OLD_BIN = '/usr/local/sbin/wp-secmon';
     public const CONF_DIR = '/etc/wp-secmon';
     private const UNIT_DIR = '/etc/systemd/system';
     private const TIMERS = ['discover', 'users', 'integrity', 'checksums', 'vulns'];
@@ -113,11 +116,20 @@ final class Installer
         self::say(I18n::t('Installing wp-secmon %s (PHP: %s)', VERSION, $php));
 
         // The program: a root-owned copy of this phar, executed by site owners for the file scan.
-        $upgrade = is_file(self::BIN);
+        $upgrade = is_file(self::BIN) || is_file(self::OLD_BIN);
         if (realpath($phar) !== realpath(self::BIN)) {
             self::putExecutable(self::BIN, (string) file_get_contents($phar));
         }
-        self::say('  ' . I18n::t('program: %s', self::BIN));
+        if (is_file(self::OLD_BIN) && !is_link(self::OLD_BIN)) {
+            // Scripts that use the old path keep working, and so does an update started from there.
+            $tmp = self::OLD_BIN . '.new' . getmypid();
+            @unlink($tmp);
+            symlink(self::BIN, $tmp);
+            rename($tmp, self::OLD_BIN);
+            self::say('  ' . I18n::t('program: %s (moved from %s, which now links to it)', self::BIN, self::OLD_BIN));
+        } else {
+            self::say('  ' . I18n::t('program: %s', self::BIN));
+        }
 
         Util::mkdir(self::CONF_DIR, 0700);
         foreach (['wp-secmon.ini', 'site-users.map'] as $file) {
@@ -215,6 +227,7 @@ final class Installer
         }
         @unlink('/etc/logrotate.d/wp-secmon');
         @unlink(self::BIN);
+        @unlink(self::OLD_BIN);
 
         if (!$purge) {
             self::say(I18n::t('wp-secmon removed. Kept %s, %s and %s (--purge deletes them).', self::CONF_DIR, $cfg->str('state_dir'), $cfg->str('log_dir')));

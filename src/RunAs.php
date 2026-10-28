@@ -47,9 +47,7 @@ final class RunAs
         $this->timeoutBin = Util::which('timeout');
         $this->prlimit = Util::which('prlimit');
         $this->method = $this->euid === 0 ? $this->pickMethod($cfg->str('run_as_method')) : 'self';
-        if ($this->method !== 'self') {
-            $this->setsid = self::setsidPrefix();
-        }
+        $this->setsid = self::setsidPrefix($this->method !== 'self');
     }
 
     public function method(): string
@@ -91,13 +89,19 @@ final class RunAs
      * setsid(1), so that site code runs in a new session without a controlling
      * terminal. Otherwise, when an admin runs wp-secmon by hand, site code could
      * open /dev/tty and push keystrokes into their root shell (TIOCSTI).
+     * Not $required for an account checking its own sites, which runs as its
+     * site code anyway; it still gets one when available, since root may have
+     * opened its terminal with su.
      */
-    private static function setsidPrefix(): array
+    private static function setsidPrefix(bool $required): array
     {
         $setsid = Util::which('setsid');
         if ($setsid !== null) {
             [, $out, $err] = Proc::capture([$setsid, '--help'], 10);
             return strpos($out . $err, '--wait') !== false ? [$setsid, '--wait', '--'] : [$setsid, '--'];
+        }
+        if (!$required) {
+            return [];
         }
         $tty = @fopen('/dev/tty', 'r');
         if ($tty === false) {

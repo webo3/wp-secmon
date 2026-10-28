@@ -356,6 +356,9 @@ return [
 
     // Configuration and files
     'configuration file not found: %s' => 'fichier de configuration introuvable : %s',
+    "'%s' has no home directory: run wp-secmon as root" => '« %s » n’a pas de dossier personnel : lancez wp-secmon en tant que root',
+    '%s is inside the WordPress root %s, where its reports could be downloaded: run wp-secmon as root'
+        => '%s est dans la racine WordPress %s, d’où ses rapports pourraient être téléchargés : lancez wp-secmon en tant que root',
     'cannot parse %s: %s' => 'impossible d’analyser %s : %s',
     'syntax error' => 'erreur de syntaxe',
     "%s: unknown setting '%s' ignored" => '%s : réglage inconnu « %s » ignoré',
@@ -370,6 +373,9 @@ return [
 
 Read-only security monitoring for the WordPress sites of this server.
 Alerts are e-mailed to root (see alert_email in /etc/wp-secmon/wp-secmon.ini).
+Run by another account, it checks only the sites in that account\'s home and
+prints the report; its state stays in ~/.wp-secmon, so the files it accepts
+are still reported to root.
 
 Commands:
   discover    Find WordPress installs and refresh the site list
@@ -392,7 +398,7 @@ Commands:
               --site to reset only some sites)
   doctor      Check requirements and configuration
 
-  install     Install this phar as /usr/local/sbin/wp-secmon, with its
+  install     Install this phar as /usr/local/bin/wp-secmon, with its
               configuration, systemd timers and WP-CLI if missing
               (upgrades in place)
                 --php=PATH   PHP binary for the timers (default: this one)
@@ -419,6 +425,9 @@ Options:
 Surveillance de sécurité en lecture seule des sites WordPress de ce serveur.
 Les alertes sont envoyées par courriel à root (voir alert_email dans
 /etc/wp-secmon/wp-secmon.ini).
+Lancé par un autre compte, il ne vérifie que les sites de son dossier
+personnel et affiche le rapport; son état reste dans ~/.wp-secmon, donc les
+fichiers qu’il accepte sont toujours signalés à root.
 
 Commandes :
   discover    Trouver les installations WordPress et mettre à jour la liste
@@ -447,7 +456,7 @@ Commandes :
               --site pour ne réinitialiser que certains sites)
   doctor      Vérifier les prérequis et la configuration
 
-  install     Installer ce phar comme /usr/local/sbin/wp-secmon, avec sa
+  install     Installer ce phar comme /usr/local/bin/wp-secmon, avec sa
               configuration, ses timers systemd et WP-CLI s’il manque
               (mise à niveau sur place)
                 --php=CHEMIN  PHP utilisé par les timers (défaut : celui-ci)
@@ -479,7 +488,6 @@ Options :
     'unexpected argument %s' => 'argument inattendu %s',
     'proc_open is disabled in php.ini; run: %s' => 'proc_open est désactivé dans php.ini; lancez : %s',
     "unknown command '%s' (see --help)" => 'commande inconnue « %s » (voir --help)',
-    'not running as root: only sites owned by the current user can be checked' => 'pas exécuté en tant que root : seuls les sites de l’utilisateur courant peuvent être vérifiés',
     "another '%s' run is in progress, skipped" => 'une autre exécution de « %s » est en cours, ignorée',
     'WP-CLI is not usable, see: wp-secmon doctor' => 'WP-CLI n’est pas utilisable, voir : wp-secmon doctor',
     'no site list yet: discovering the WordPress installs first' => 'pas encore de liste de sites : découverte des installations WordPress d’abord',
@@ -539,6 +547,8 @@ Options :
     '%d no longer accepted' => ['%d n’est plus accepté', '%d ne sont plus acceptés'],
     "The next integrity check takes this into account (hourly, or now with 'wp-secmon integrity')."
         => 'La prochaine vérification d’intégrité en tient compte (toutes les heures, ou maintenant avec « wp-secmon integrity »).',
+    "Your next 'wp-secmon integrity' takes this into account. The server's own checks still report these files to its administrator."
+        => 'Votre prochain « wp-secmon integrity » en tient compte. Les vérifications du serveur signalent toujours ces fichiers à son administrateur.',
 
     // doctor
     'WP-CLI not found at %s (set wp_cli)' => 'WP-CLI introuvable à %s (réglez wp_cli)',
@@ -558,7 +568,9 @@ Options :
     'open_basedir is set for the CLI; run with -d open_basedir=' => 'open_basedir est défini pour le CLI; lancez avec -d open_basedir=',
     'no open_basedir restriction' => 'aucune restriction open_basedir',
     'running as root' => 'exécuté en tant que root',
-    'not running as root: only your own sites can be checked' => 'pas exécuté en tant que root : seuls vos propres sites peuvent être vérifiés',
+    "not running as root: checks only the sites in this account's home, without changing what root reports"
+        => 'pas exécuté en tant que root : vérifie seulement les sites du dossier personnel de ce compte, sans changer ce que root signale',
+    'configuration: the defaults (-c FILE reads another one)' => 'configuration : valeurs par défaut (-c FICHIER en lit une autre)',
     'configuration: %s' => 'configuration : %s',
     'no configuration file at %s, using defaults' => 'aucun fichier de configuration à %s, valeurs par défaut utilisées',
     'language: %s' => 'langue : %s',
@@ -572,10 +584,12 @@ Options :
     '%s (phar)' => '%s (phar)',
     '%s (source tree)' => '%s (sources)',
     'program: %s' => 'programme : %s',
+    'program: %s (moved from %s, which now links to it)' => 'programme : %s (déplacé de %s, qui y renvoie maintenant)',
     'program: %s must be owned by root and not group/world writable: site owners execute it'
         => 'programme : %s doit appartenir à root et ne pas être modifiable par le groupe ou les autres : les propriétaires des sites l’exécutent',
     'Alerts and storage' => 'Alertes et stockage',
     'mail to %s via %s' => 'courriel à %s via %s',
+    'reports are printed, not e-mailed' => 'les rapports sont affichés, pas envoyés par courriel',
     'each site is reported to its WordPress administration address' => 'chaque site est signalé à son adresse courriel d’administration WordPress',
     'each site is reported to its WordPress administration address, with a copy to %s'
         => 'chaque site est signalé à son adresse courriel d’administration WordPress, avec copie à %s',

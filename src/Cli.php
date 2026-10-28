@@ -38,6 +38,9 @@ Usage: wp-secmon [options] <command>
 
 Read-only security monitoring for the WordPress sites of this server.
 Alerts are e-mailed to root (see alert_email in /etc/wp-secmon/wp-secmon.ini).
+Run by another account, it checks only the sites in that account's home and
+prints the report; its state stays in ~/.wp-secmon, so the files it accepts
+are still reported to root.
 
 Commands:
   discover    Find WordPress installs and refresh the site list
@@ -60,7 +63,7 @@ Commands:
               --site to reset only some sites)
   doctor      Check requirements and configuration
 
-  install     Install this phar as /usr/local/sbin/wp-secmon, with its
+  install     Install this phar as /usr/local/bin/wp-secmon, with its
               configuration, systemd timers and WP-CLI if missing
               (upgrades in place)
                 --php=PATH   PHP binary for the timers (default: this one)
@@ -193,6 +196,13 @@ TXT);
 
         $this->cfg = Config::load($this->configFile);
         I18n::setLanguage($this->lang ?? $this->cfg->str('language'));
+        // Another account checks its own sites, for itself: nothing is mailed (see Config::forAccount).
+        if (Util::effectiveUid() !== 0) {
+            $pw = Util::passwd(Util::effectiveUid());
+            $this->cfg = $this->cfg->forAccount((string) ($pw['name'] ?? Util::effectiveUid()), (string) ($pw['home'] ?? ''));
+            $this->noMail = true;
+            $this->print = true;
+        }
         switch ($command) {
             case 'uninstall':
                 return Installer::uninstall($this->cfg, $this->purge);
@@ -215,10 +225,15 @@ TXT);
                 return (new Doctor($this->cfg))->run($this->only);
             case 'update':
                 return $this->checkOnly ? Updater::check($this->cfg) : Updater::update($this->cfg, $this->configFile);
-            case '__publish-logs':
-                // Internal: run by the systemd unit after each check, outside its read-only sandbox.
+            case '__deliver':
+            case '__publish-logs': // its name in the units of older versions
+                // Internal: run by the systemd unit after each check, outside its sandbox.
                 $this->init();
-                $this->publishLogs();
+                try {
+                    (new Alerts($this->cfg))->sendQueued();
+                } finally {
+                    $this->publishLogs();
+                }
                 return 0;
             default:
                 throw new \InvalidArgumentException(I18n::t("unknown command '%s' (see --help)", $command));
@@ -228,7 +243,7 @@ TXT);
     private function init(): void
     {
         if (Util::effectiveUid() !== 0) {
-            Log::warning(I18n::t('not running as root: only sites owned by the current user can be checked'));
+            Log::debug('not running as root: checking the sites of this account, state in ' . $this->cfg->str('state_dir'));
         }
         umask(077);
         Util::mkdir($this->cfg->str('state_dir'));
@@ -340,8 +355,8 @@ TXT);
             }
         } finally {
             $alerts->finish();
-            // Under systemd the homes are read-only here: the unit runs __publish-logs afterwards.
-            if ((string) getenv('WP_SECMON_DEFER_USER_LOGS') === '') {
+            // Under systemd the homes are read-only here: the unit runs __deliver afterwards.
+            if ((string) getenv('WP_SECMON_DEFER_DELIVERY') === '') {
                 $this->publishLogs();
             }
         }
@@ -374,8 +389,10 @@ TXT);
             }
         }
         if (!$reg['sites'] && !$reg['skipped'] && !$reg['orphans']) {
-            fwrite(STDOUT, I18n::t('No WordPress install found in %s.', implode(', ', $this->cfg->list('scan_paths'))) . "\n"
-                . I18n::t("Add the directories that hold the sites to scan_paths in %s, then run 'wp-secmon discover'.", $this->cfg->file) . "\n");
+            fwrite(STDOUT, I18n::t('No WordPress install found in %s.', implode(', ', $this->cfg->list('scan_paths'))) . "\n");
+            if (Util::effectiveUid() === 0) {
+                fwrite(STDOUT, I18n::t("Add the directories that hold the sites to scan_paths in %s, then run 'wp-secmon discover'.", $this->cfg->file) . "\n");
+            }
             return 0;
         }
         // Address and administration e-mail as read by the last integrity check. The root comes last: it is never cut.

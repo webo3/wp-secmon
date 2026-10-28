@@ -60,7 +60,7 @@ final class Updater
         if (Util::effectiveUid() !== 0) {
             throw new \RuntimeException(I18n::t('run the update as root'));
         }
-        if (!is_file(Installer::BIN)) {
+        if (!is_file(Installer::BIN) && !is_file(Installer::OLD_BIN)) {
             throw new \RuntimeException(I18n::t('wp-secmon is not installed: download wp-secmon.phar and run php wp-secmon.phar install'));
         }
         $latest = self::latest($cfg);

@@ -131,8 +131,9 @@ function snapshot(): array
 {
     $tables = array_filter(explode("\n", sql("SELECT CONCAT(table_schema, '.', table_name) FROM information_schema.tables WHERE table_schema LIKE 'wp\\_%'")));
     $db = sql('CHECKSUM TABLE ' . implode(', ', $tables) . ' EXTENDED');
-    // Except the logs each account gets in ~/logs (which changes the size and time of its home).
-    [, $files] = sh(['find', '/home', '/var/www', '-regex', '/home/[^/]*/logs', '-prune', '-o', '-printf', '%p %s %T@ %m %U:%G\n']);
+    // Except the logs each account gets in ~/logs and the state of its own runs in ~/.wp-secmon
+    // (which change the size and time of its home).
+    [, $files] = sh(['find', '/home', '/var/www', '-regex', '/home/[^/]*/\(logs\|\.wp-secmon\)', '-prune', '-o', '-printf', '%p %s %T@ %m %U:%G\n']);
     $files = explode("\n", (string) preg_replace('#^(/home/[^/ ]+) \d+ [\d.]+ #m', '$1 - - ', $files));
     sort($files);
     return ['db' => $db, 'files' => $files];
@@ -218,7 +219,7 @@ echo $out;
 $st = @stat('/usr/local/bin/wp');
 expect('install downloads WP-CLI', has($out, 'WP-CLI: /usr/local/bin/wp (downloaded)') && $st && $st['uid'] === 0 && ($st['mode'] & 0777) === 0755, $out);
 file_put_contents('/etc/wp-secmon/wp-secmon.ini', "[discovery]\nscan_paths[] = /home\nscan_paths[] = /var/www\n[alerts]\nsendmail = /usr/local/bin/fake-sendmail\n");
-$bin = '/usr/local/sbin/wp-secmon';
+$bin = '/usr/local/bin/wp-secmon';
 $st = stat($bin);
 expect('installed the phar as ' . $bin, is_file($bin) && hash_file('sha256', $bin) === hash_file('sha256', '/root/wp-secmon.phar'));
 expect('installed program is root-owned and not writable by others', $st['uid'] === 0 && ($st['mode'] & 0777) === 0755);
@@ -377,15 +378,15 @@ unlink(ALICE . '/wp-admin/shell.php');
 // Under systemd the homes are read-only during the check: the unit delivers the logs afterwards.
 clearstatcache();
 $logSize = filesize(ALICE_LOGS . '/alerts.log');
-putenv('WP_SECMON_DEFER_USER_LOGS=1');
+putenv('WP_SECMON_DEFER_DELIVERY=1');
 [, $out, , $details] = wpsecmon('checksums', '--print', '--no-mail');
-putenv('WP_SECMON_DEFER_USER_LOGS');
+putenv('WP_SECMON_DEFER_DELIVERY');
 expect('fixed core reported as resolved, with readme.html still missing', has($details, 'Resolved: WordPress core files do not match')
     && has($out, 'Fixed since the last report') && has($out, '✓ WordPress core files do not match') && !has($out . $details, 'Check failed'), $out);
 clearstatcache();
 expect('logs kept for later when delivery is deferred', filesize(ALICE_LOGS . '/alerts.log') === $logSize
     && has((string) @file_get_contents('/var/lib/wp-secmon/outbox/alice/pending.log'), 'Resolved: WordPress core files do not match'));
-[$code] = sh(['wp-secmon', '__publish-logs']);
+[$code] = sh(['wp-secmon', '__deliver']);
 expect('logs delivered after the check', $code === 0 && has((string) file_get_contents(ALICE_LOGS . '/alerts.log'), 'Resolved: WordPress core files do not match')
     && file_get_contents('/var/lib/wp-secmon/outbox/alice/pending.log') === '');
 [, $out] = wpsecmon('status');
@@ -406,7 +407,14 @@ expect('one e-mail for the administrator of both sites, with a copy', substr_cou
 expect('that e-mail reports both sites', has($html, ALICE) && has($html, BOB) && has($html, '2 sites checked'), $html);
 // A changed address still gets the report that says so.
 wp('alice', ALICE, ['option', 'update', 'admin_email', 'owner@alice.test', '--quiet']);
+// Under systemd the unit sends the e-mails after the check, as it delivers the logs.
+putenv('WP_SECMON_DEFER_DELIVERY=1');
 [, $out, $mail] = wpsecmon('integrity');
+putenv('WP_SECMON_DEFER_DELIVERY');
+expect('e-mails queued when delivery is deferred', $mail === '' && count(glob('/var/lib/wp-secmon/mail/*.json') ?: []) === 2, $out . $mail);
+[$code] = sh(['wp-secmon', '__deliver']);
+$mail = (string) @file_get_contents(MAIL);
+expect('queued e-mails sent after the check', $code === 0 && glob('/var/lib/wp-secmon/mail/*.json') === [], $mail);
 expect('address change reported to the old and the new address', substr_count($mail, "\nSubject: ") === 2
     && has($mail, "To: owner@alice.test\nCc: soc@example.test\n") && has($mail, "To: admin@example.test\nCc: soc@example.test\n")
     && substr_count($mail, 'Content-Type: text/plain') === 2 && !has($mail, 'To: root'), $out . $mail);
@@ -495,6 +503,48 @@ expect('accepted file reported again once changed', has($details, '3 executable 
 expect('acceptance withdrawn', has($out, 'changed since') && has($out, 'no longer accepted') && has($out, '0 files accepted, 1 no longer accepted')
     && json_decode((string) file_get_contents($accepted), true) === [], $out);
 unlink($secret);
+
+// ---------------------------------------------------------------------------
+step('an account runs wp-secmon itself');
+/** Run wp-secmon as alice; returns [exit code, stdout+stderr, detailed reports in ~/.wp-secmon]. */
+$asAlice = static function (string $input, string ...$args) use ($bin): array {
+    @unlink(MAIL);
+    foreach (glob('/home/alice/.wp-secmon/last-report-*.txt') ?: [] as $file) {
+        unlink($file);
+    }
+    [$code, $out, $err] = sh(array_merge(['runuser', '-u', 'alice', '--', $bin], $args), false, $input);
+    echo "\$ (alice) wp-secmon " . implode(' ', $args) . " (exit $code)\n";
+    return [$code, $out . $err, implode('', array_map('file_get_contents', glob('/home/alice/.wp-secmon/last-report-*.txt') ?: []))];
+};
+$before = snapshot();
+[$code, $out, $details] = $asAlice('', 'all');
+echo $out;
+$st = @stat('/home/alice/.wp-secmon');
+expect('an account checks its own sites and prints the report', $code === 0 && has($out, 'What to do') && has($details, ALICE)
+    && has($out, 'Details: /home/alice/.wp-secmon/last-report-') && !has($out . $details, 'Check failed'), $out . $details);
+expect('nothing about the other accounts or the server', !has($out . $details, BOB) && !has($out . $details, ROOTSITE), $out . $details);
+expect('its state is its own', $st && $st['uid'] === 1001 && ($st['mode'] & 0777) === 0700 && is_file('/home/alice/.wp-secmon/sites.json'));
+expect('nothing e-mailed', !file_exists(MAIL));
+[$code, $out] = $asAlice('', 'users', '--site', BOB);
+expect("another account's site is not checked", $code === 1 && has($out, BOB . ': '), $out);
+[, $out] = $asAlice('', 'sites');
+expect('sites lists its own sites', (bool) preg_match('#^alice\s+http://alice\.test\s+owner@alice\.test\s+' . ALICE . '$#m', $out)
+    && !has($out, BOB) && !has($out, ROOTSITE), $out);
+[$code, $out] = $asAlice("y\ny\ny\n", 'review');
+echo $out;
+expect('an account reviews the files of its last check', $code === 0 && has($out, ALICE . ' (read as alice): ')
+    && (bool) preg_match('/[1-9]\d* files? accepted/', $out) && has($out, "The server's own checks still report these files"), $out);
+[, $out, $details] = $asAlice('', 'integrity');
+expect('accepted files no longer reported to the account', has($out, 'Fixed since the last report')
+    && !preg_match('/\[CRITICAL\] integrity: \d+ executable file/', $details), $out . $details);
+$after = snapshot();
+expect('database and files untouched by the account', ($d = sameSnapshot($before, $after)) === '', $d);
+[, $out] = wpsecmon('status');
+expect('files accepted by the account are still reported to root', has($out, 'executable file(s) in the uploads directory')
+    && json_decode((string) file_get_contents($accepted), true) === [], $out);
+[, $out] = $asAlice('', 'doctor');
+expect('doctor for an account', has($out, "checks only the sites in this account's home") && has($out, 'reports are printed, not e-mailed')
+    && has($out, 'state_dir /home/alice/.wp-secmon') && !has($out, '~/logs/wp-secmon'), $out);
 
 // ---------------------------------------------------------------------------
 step('site-users.map');
@@ -621,9 +671,19 @@ expect('update refuses a phar that does not match its checksum', $code !== 0 && 
 proc_terminate($server);
 proc_close($server);
 
+step('upgrade from /usr/local/sbin');
+// Where older versions installed the program.
+rename($bin, '/usr/local/sbin/wp-secmon');
+[$code, $out] = sh(['php', '/root/wp-secmon.phar', 'install']);
+expect('the program moves to /usr/local/bin', is_file($bin) && !is_link($bin) && $version() === 'wp-secmon ' . VERSION
+    && has($out, "program: $bin (moved from /usr/local/sbin/wp-secmon, which now links to it)") && !has($out, 'Next steps'), $out);
+expect('a link to it stays at the old path', @readlink('/usr/local/sbin/wp-secmon') === $bin
+    && trim(sh(['/usr/local/sbin/wp-secmon', '--version'])[1]) === 'wp-secmon ' . VERSION);
+
 step('uninstall');
 sh(['wp-secmon', 'uninstall']);
-expect('uninstall removes the program and keeps the configuration', !file_exists('/usr/local/sbin/wp-secmon') && is_file('/etc/wp-secmon/wp-secmon.ini'));
+expect('uninstall removes the program and keeps the configuration', !file_exists($bin) && !is_link('/usr/local/sbin/wp-secmon')
+    && is_file('/etc/wp-secmon/wp-secmon.ini'));
 sh(['php', '/root/wp-secmon.phar', 'uninstall', '--purge']);
 expect('--purge removes configuration, state and logs', !is_dir('/etc/wp-secmon') && !is_dir('/var/lib/wp-secmon') && !is_dir('/var/log/wp-secmon'));
 expect('sites untouched by uninstall', is_file(ALICE . '/wp-config.php') && is_file(BOB . '/wp-load.php'));

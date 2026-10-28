@@ -62,7 +62,10 @@ final class Review
         if ($this->accepted + $this->withdrawn > 0) {
             self::say("\n" . I18n::n($this->accepted, '%d file accepted', '%d files accepted', $this->accepted) . ', '
                 . I18n::n($this->withdrawn, '%d no longer accepted', '%d no longer accepted', $this->withdrawn) . '.');
-            self::say(I18n::t("The next integrity check takes this into account (hourly, or now with 'wp-secmon integrity')."));
+            // An account's decisions stay in its own state (see Config::forAccount).
+            self::say(Util::effectiveUid() === 0
+                ? I18n::t("The next integrity check takes this into account (hourly, or now with 'wp-secmon integrity').")
+                : I18n::t("Your next 'wp-secmon integrity' takes this into account. The server's own checks still report these files to its administrator."));
         }
         return 0;
     }

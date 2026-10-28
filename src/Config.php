@@ -11,6 +11,8 @@ namespace WpSecMon;
 final class Config
 {
     public const DEFAULT_FILE = '/etc/wp-secmon/wp-secmon.ini';
+    /** Where an account running wp-secmon itself keeps its state and reports, relative to its home. */
+    public const ACCOUNT_DIR = '.wp-secmon';
 
     private const DEFAULTS = [
         'language' => 'en',
@@ -116,11 +118,12 @@ final class Config
         $file = $file ?? self::DEFAULT_FILE;
         $values = self::DEFAULTS;
 
-        if (!is_file($file)) {
+        // The default file is root's: other accounts cannot read it.
+        if (!is_file($file) || (!$explicit && !is_readable($file))) {
             if ($explicit) {
                 throw new \RuntimeException(I18n::t('configuration file not found: %s', $file));
             }
-            Log::debug("no configuration at $file, using defaults");
+            Log::debug("no readable configuration at $file, using defaults");
             return new self($values, $file);
         }
 
@@ -192,6 +195,33 @@ final class Config
     public function list(string $key): array
     {
         return (array) $this->values[$key];
+    }
+
+    /**
+     * This configuration for an account that runs wp-secmon itself, not as
+     * root: the sites in its home, with its own state and reports in
+     * ~/.wp-secmon. Root's monitoring never reads them: site code runs as the
+     * account too, and could accept its own web shell there.
+     */
+    public function forAccount(string $name, string $home): self
+    {
+        $home = rtrim((string) (realpath($home) ?: ''), '/');
+        if ($home === '') {
+            throw new \RuntimeException(I18n::t("'%s' has no home directory: run wp-secmon as root", $name));
+        }
+        $dir = $home . '/' . self::ACCOUNT_DIR;
+        // A www-data home in /var/www, say.
+        for ($parent = $home; $parent !== '/'; $parent = dirname($parent)) {
+            if (is_file("$parent/wp-load.php")) {
+                throw new \RuntimeException(I18n::t('%s is inside the WordPress root %s, where its reports could be downloaded: run wp-secmon as root', $dir, $parent));
+            }
+        }
+        $values = $this->values;
+        $values['state_dir'] = $values['log_dir'] = $dir;
+        $values['scan_paths'] = [$home];
+        // Root copies its own logs to the accounts; nothing to copy here.
+        $values['user_log_dir'] = '';
+        return new self($values, $this->file);
     }
 
     /** The defaults with $overrides: for tests, and for install when the configuration cannot be read. */

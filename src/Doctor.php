@@ -73,9 +73,14 @@ final class Doctor
         $this->line(ini_get('open_basedir') ? 'warn' : 'ok', ini_get('open_basedir')
             ? I18n::t('open_basedir is set for the CLI; run with -d open_basedir=') : I18n::t('no open_basedir restriction'));
         $root = Util::effectiveUid() === 0;
-        $this->line($root ? 'ok' : 'warn', $root ? I18n::t('running as root') : I18n::t('not running as root: only your own sites can be checked'));
-        $this->line(is_file($this->cfg->file) ? 'ok' : 'warn', is_file($this->cfg->file)
-            ? I18n::t('configuration: %s', $this->cfg->file) : I18n::t('no configuration file at %s, using defaults', $this->cfg->file));
+        $this->line('ok', $root ? I18n::t('running as root')
+            : I18n::t("not running as root: checks only the sites in this account's home, without changing what root reports"));
+        if (is_file($this->cfg->file) && is_readable($this->cfg->file)) {
+            $this->line('ok', I18n::t('configuration: %s', $this->cfg->file));
+        } else {
+            $this->line($root ? 'warn' : 'ok', $root ? I18n::t('no configuration file at %s, using defaults', $this->cfg->file)
+                : I18n::t('configuration: the defaults (-c FILE reads another one)'));
+        }
         $this->line('ok', I18n::t('language: %s', I18n::language() . ' (' . I18n::LANGUAGES[I18n::language()] . ')'));
 
         fwrite(STDOUT, "\n" . I18n::t('Running as site owners') . "\n");
@@ -102,13 +107,15 @@ final class Doctor
 
         fwrite(STDOUT, "\n" . I18n::t('Alerts and storage') . "\n");
         $sendmail = $this->cfg->str('sendmail');
-        if (is_executable($sendmail)) {
+        if (!$root) {
+            $this->line('ok', I18n::t('reports are printed, not e-mailed'));
+        } elseif (is_executable($sendmail)) {
             $this->line('ok', I18n::t('mail to %s via %s', $this->cfg->str('alert_email'), $sendmail));
         } else {
             $this->line(function_exists('mail') ? 'warn' : 'FAIL', function_exists('mail')
                 ? I18n::t('%s not found, using PHP mail()', $sendmail) : I18n::t('%s not found', $sendmail));
         }
-        if ($this->cfg->bool('alert_site_admins')) {
+        if ($root && $this->cfg->bool('alert_site_admins')) {
             $cc = $this->cfg->list('alert_site_admins_cc');
             $this->line('ok', $cc ? I18n::t('each site is reported to its WordPress administration address, with a copy to %s', implode(', ', $cc))
                 : I18n::t('each site is reported to its WordPress administration address'));
@@ -119,8 +126,10 @@ final class Doctor
             $this->line($ok ? 'ok' : 'FAIL', $ok ? "$k $dir" : I18n::t('%s %s is not writable', $k, $dir));
         }
         $sub = $this->cfg->str('user_log_dir');
-        $this->line('ok', $sub !== '' ? I18n::t('each account gets the logs of its own sites in ~/%s', $sub)
-            : I18n::t('the accounts do not get the logs of their sites (user_log_dir is empty)'));
+        if ($root) {
+            $this->line('ok', $sub !== '' ? I18n::t('each account gets the logs of its own sites in ~/%s', $sub)
+                : I18n::t('the accounts do not get the logs of their sites (user_log_dir is empty)'));
+        }
         $vc = Http::get($this->cfg->str('wp_version_api_url'), 20, $this->cfg->str('http_proxy'));
         $this->line($vc !== null ? 'ok' : 'warn', $vc !== null
             ? I18n::t('%s reachable', 'api.wordpress.org') : I18n::t('%s unreachable (outdated core not reported)', 'api.wordpress.org'));
