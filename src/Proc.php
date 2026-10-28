@@ -18,11 +18,14 @@ final class Proc
     /**
      * Run $cmd, writing stdout/stderr to the given files. Returns the exit code
      * (128+N when killed by signal N, 124 on timeout, 127 if it could not start).
+     * $stdin is written to a pipe before waiting: only for trusted commands
+     * that read it at once. $stdinFile is opened here and handed to the command.
      */
-    public static function run(array $cmd, string $stdout, string $stderr, int $timeout, ?array $env = null, ?string $stdin = null): int
+    public static function run(array $cmd, string $stdout, string $stderr, int $timeout, ?array $env = null, ?string $stdin = null,
+        string $stdinFile = ''): int
     {
         $spec = [
-            0 => $stdin === null ? ['file', '/dev/null', 'r'] : ['pipe', 'r'],
+            0 => $stdin !== null ? ['pipe', 'r'] : ['file', $stdinFile !== '' ? $stdinFile : '/dev/null', 'r'],
             1 => ['file', $stdout, 'w'],
             2 => ['file', $stderr, 'w'],
         ];

@@ -118,6 +118,9 @@ final class Doctor
             $ok = is_dir($dir) ? is_writable($dir) : is_writable(dirname($dir));
             $this->line($ok ? 'ok' : 'FAIL', $ok ? "$k $dir" : I18n::t('%s %s is not writable', $k, $dir));
         }
+        $sub = $this->cfg->str('user_log_dir');
+        $this->line('ok', $sub !== '' ? I18n::t('each account gets the logs of its own sites in ~/%s', $sub)
+            : I18n::t('the accounts do not get the logs of their sites (user_log_dir is empty)'));
         $vc = Http::get($this->cfg->str('wp_version_api_url'), 20, $this->cfg->str('http_proxy'));
         $this->line($vc !== null ? 'ok' : 'warn', $vc !== null
             ? I18n::t('%s reachable', 'api.wordpress.org') : I18n::t('%s unreachable (outdated core not reported)', 'api.wordpress.org'));

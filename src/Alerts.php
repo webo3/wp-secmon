@@ -16,6 +16,8 @@ namespace WpSecMon;
  *
  * Everything reported during one run is mailed as a single report (see Report),
  * or as one report per site administrator with alert_site_admins (see mailings()).
+ * Each account also gets the alerts and reports of its own sites in its home
+ * (see UserLogs).
  * Each alert carries a "kind" (by default the prefix of its key) and optional
  * structured "meta" that the report uses to suggest what to do.
  */
@@ -26,6 +28,7 @@ final class Alerts
     private Config $cfg;
     private string $stateDir;
     private string $logDir;
+    private UserLogs $userLogs;
     private array $records = [];
     private string $ctxId = '_global';
     private string $ctxRoot = '(server)';
@@ -34,7 +37,7 @@ final class Alerts
 
     public string $check = 'wp-secmon';
     public array $checksRun = [];
-    /** Sites checked during this run (root => true), for the report totals. */
+    /** Sites checked during this run (root => account), for the report totals. */
     public array $checked = [];
     public int $errors = 0;
     public int $suppressed = 0;
@@ -46,6 +49,7 @@ final class Alerts
         $this->cfg = $cfg;
         $this->stateDir = $cfg->str('state_dir');
         $this->logDir = $cfg->str('log_dir');
+        $this->userLogs = new UserLogs($cfg);
         $this->started = time();
     }
 
@@ -95,6 +99,7 @@ final class Alerts
             Log::debug("{$this->ctxRoot}: unchanged, not repeated: $title");
             return;
         }
+        $meta += ['kind' => explode('.', $key)[0]];
         Util::writeJson($file, [
             'fp' => $fp,
             'last' => $now,
@@ -103,8 +108,8 @@ final class Alerts
             'title' => Util::oneLine($title),
             'root' => $this->ctxRoot,
             'check' => $this->check,
+            'kind' => (string) $meta['kind'],
         ]);
-        $meta += ['kind' => explode('.', $key)[0]];
         $this->emit($sev, $title, $details, $meta, ($old['fp'] ?? '') === $fp ? (int) ($old['first'] ?? $now) : null);
     }
 
@@ -203,6 +208,9 @@ final class Alerts
         $title = Report::fullTitle($r);
         $line = sprintf("%s %s check=%s site=%s user=%s %s\n", gmdate('Y-m-d\TH:i:s\Z'), strtoupper($sev), $this->check, $this->ctxRoot, $this->ctxUser, $title);
         @file_put_contents($this->logDir . '/alerts.log', $line, FILE_APPEND | LOCK_EX);
+        if (self::account($r) !== null) {
+            $this->userLogs->queueLine($r['user'], $line);
+        }
         // A report printed on the terminal already shows every alert.
         $level = $sev === 'critical' ? 'crit' : ($sev === 'warning' ? 'warning' : 'notice');
         Log::write($this->print && !getenv('JOURNAL_STREAM') ? 'debug' : $level, "[$sev] {$this->ctxRoot}: $title");
@@ -216,8 +224,16 @@ final class Alerts
         }
         @unlink($file);
         if ($this->cfg->bool('alert_on_resolve')) {
-            $this->emit('info', (string) ($old['title'] ?? basename($file, '.json')), '', ['kind' => 'resolved']);
+            // What was resolved (a server note stays one); older state files only have the key.
+            $of = (string) ($old['kind'] ?? explode('.', basename($file, '.json'))[0]);
+            $this->emit('info', (string) ($old['title'] ?? basename($file, '.json')), '', ['kind' => 'resolved', 'of' => $of]);
         }
+    }
+
+    /** The account whose logs an alert goes to: the one its site is checked as, not for server notes. */
+    private static function account(array $r): ?string
+    {
+        return $r['user'] !== '-' && !Report::isServerNote($r) ? $r['user'] : null;
     }
 
     private function stateDir(): string
@@ -281,6 +297,7 @@ final class Alerts
         ];
         $report = new Report($this->records, $run, $this->cfg);
         @file_put_contents($run['details'], $report->details());
+        $this->queueAccountReports($run);
         if ($this->print) {
             $color = function_exists('posix_isatty') && posix_isatty(STDOUT) && (string) getenv('NO_COLOR') === '';
             fwrite(STDOUT, $report->text($color));
@@ -314,6 +331,38 @@ final class Alerts
             if ($code !== 0) {
                 Log::error(I18n::t('alert_command failed: %s', Util::oneLine($err)));
             }
+        }
+    }
+
+    /**
+     * The details of this run for each account, about its own sites only, as
+     * mailings() splits them for site administrators (see UserLogs).
+     * @param array $run see Report
+     */
+    private function queueAccountReports(array $run): void
+    {
+        $byAccount = [];
+        foreach ($this->records as $r) {
+            $account = self::account($r);
+            if ($account !== null) {
+                $byAccount[$account][] = $r;
+            }
+        }
+        foreach ($byAccount as $account => $records) {
+            $account = (string) $account;
+            $target = $this->userLogs->target($account);
+            if ($target === null) {
+                continue;
+            }
+            $name = basename($run['details']);
+            $part = [
+                'sites' => count(array_keys($this->checked, $account, true)),
+                'errors' => 0,
+                'count' => self::tally($records)[0],
+                'details' => "$target/$name",
+                'log' => "$target/alerts.log",
+            ] + $run;
+            $this->userLogs->queueReport($account, $name, (new Report($records, $part, $this->cfg))->details());
         }
     }
 

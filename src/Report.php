@@ -115,7 +115,8 @@ final class Report
     /** Whether an alert is about the monitoring itself, for the administrator of the server, not about a site. */
     public static function isServerNote(array $r): bool
     {
-        return $r['root'] === '(server)' || in_array($r['kind'], self::SERVER_KINDS, true);
+        return $r['root'] === '(server)' || in_array($r['kind'], self::SERVER_KINDS, true)
+            || ($r['kind'] === 'resolved' && in_array($r['meta']['of'] ?? '', self::SERVER_KINDS, true));
     }
 
     private static function status(int $level): string

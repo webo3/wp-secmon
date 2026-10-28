@@ -7,9 +7,10 @@ namespace WpSecMon;
 /**
  * Runs commands as a site owner, never as root.
  *
- * The command gets a clean environment, cwd=/, no stdin, a hard timeout, a
- * cap on the size of the files it writes, and a new session without a
- * controlling terminal. With setpriv (the default when available) there is
+ * The command gets a clean environment, cwd=/, no stdin (or a file opened by
+ * root, for wp-secmon's own helpers), a hard timeout, a cap on the size of
+ * the files it writes, and a new session without a controlling terminal.
+ * With setpriv (the default when available) there is
  * no PAM session and the process runs with no_new_privs, so it cannot regain
  * privileges through setuid binaries.
  *
@@ -198,12 +199,13 @@ final class RunAs
     }
 
     /**
-     * Run $cmd as $user; stdout/stderr go to files. $siteRoot is the site the
-     * command runs code from, if any. Returns the exit code, or RunAs::REFUSED
-     * when the user is root, unknown, not switchable, as good as root, or
-     * when $siteRoot could be swapped by another account.
+     * Run $cmd as $user; stdout/stderr go to files, and stdin comes from
+     * $stdinFile if given. $siteRoot is the site the command runs code from,
+     * if any. Returns the exit code, or RunAs::REFUSED when the user is root,
+     * unknown, not switchable, as good as root, or when $siteRoot could be
+     * swapped by another account.
      */
-    public function run(string $user, array $cmd, string $stdout, string $stderr, int $timeout, string $siteRoot = ''): int
+    public function run(string $user, array $cmd, string $stdout, string $stderr, int $timeout, string $siteRoot = '', string $stdinFile = ''): int
     {
         $pw = Util::passwd($user);
         if ($pw === null) {
@@ -274,6 +276,6 @@ final class RunAs
                 $argv = $inner;
         }
 
-        return Proc::run(array_merge($this->setsid, $argv), $stdout, $stderr, $timeout + 30, $env);
+        return Proc::run(array_merge($this->setsid, $argv), $stdout, $stderr, $timeout + 30, $env, null, $stdinFile);
     }
 }

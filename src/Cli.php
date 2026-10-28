@@ -104,6 +104,12 @@ TXT);
                 JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE) . "\n");
             return 0;
         }
+        // Internal: logs copied to an account's home, as that account (see UserLogs::publish). No configuration.
+        if (($argv[1] ?? '') === '__write-logs') {
+            [$code, $result] = UserLogs::write((string) stream_get_contents(STDIN));
+            fwrite(STDOUT, json_encode($result, JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE) . "\n");
+            return $code;
+        }
 
         $cli = new self();
         try {
@@ -209,6 +215,11 @@ TXT);
                 return (new Doctor($this->cfg))->run($this->only);
             case 'update':
                 return $this->checkOnly ? Updater::check($this->cfg) : Updater::update($this->cfg, $this->configFile);
+            case '__publish-logs':
+                // Internal: run by the systemd unit after each check, outside its read-only sandbox.
+                $this->init();
+                $this->publishLogs();
+                return 0;
             default:
                 throw new \InvalidArgumentException(I18n::t("unknown command '%s' (see --help)", $command));
         }
@@ -330,8 +341,22 @@ TXT);
             }
         } finally {
             $alerts->finish();
+            // Under systemd the homes are read-only here: the unit runs __publish-logs afterwards.
+            if ((string) getenv('WP_SECMON_DEFER_USER_LOGS') === '') {
+                $this->publishLogs();
+            }
         }
         return $status;
+    }
+
+    /** Copies the queued logs of each account to its home, as that account (see UserLogs). Never fails the run. */
+    private function publishLogs(): void
+    {
+        try {
+            (new UserLogs($this->cfg))->publish($this->tmp);
+        } catch (\Throwable $e) {
+            Log::error(I18n::t('the logs of the accounts could not be copied: %s', $e->getMessage()));
+        }
     }
 
     private function sites(): int

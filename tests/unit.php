@@ -21,6 +21,7 @@ use WpSecMon\Review;
 use WpSecMon\RunAs;
 use WpSecMon\Sites;
 use WpSecMon\Updater;
+use WpSecMon\UserLogs;
 use WpSecMon\Util;
 use WpSecMon\VulnDb;
 use WpSecMon\WpResult;
@@ -285,6 +286,21 @@ Warning: File should not exist: wp-includes/js/error_log
 Warning: File should not exist: wp-admin/error_log.php
 TXT, $cfg->list('core_checksum_ignore'));
 ok('core error_log ignored by default', $core['extra'] === ['wp-admin/error_log.php'], $core);
+// Files removed to hide the version are not reported, but still are when modified.
+$core = ChecksumsCheck::parseCore(<<<'TXT'
+Warning: File doesn't exist: readme.html
+Warning: File doesn't exist: license.txt
+Warning: File doesn't exist: wp-config-sample.php
+Warning: File doesn't exist: wp-login.php
+Warning: File doesn't verify against checksum: readme.html
+Error: WordPress installation doesn't verify against checksums.
+TXT, $cfg->list('core_checksum_ignore'), $cfg->list('core_checksum_ignore_missing'));
+ok('core hardening removals ignored by default', $core['missing'] === ['wp-login.php'] && $core['modified'] === ['readme.html']
+    && $core['mismatch'] && $core['error'] === null, $core);
+$core = ChecksumsCheck::parseCore("Warning: File doesn't exist: readme.html\nError: WordPress installation doesn't verify against checksums.\n",
+    [], $cfg->list('core_checksum_ignore_missing'));
+ok('only ignored differences: a mismatch, not a failure', $core['missing'] === [] && $core['mismatch'] && $core['error'] === null, $core);
+ok('no mismatch without the line', !ChecksumsCheck::parseCore("Success: WordPress installation verifies against checksums.\n")['mismatch']);
 $g = ChecksumsCheck::groupPluginErrors([
     ['plugin_name' => 'akismet', 'file' => 'error_log', 'message' => 'File was added'],
     ['plugin_name' => 'akismet', 'file' => 'views/error_log', 'message' => 'File was added'],
@@ -447,6 +463,16 @@ try {
     ok('config rejects invalid choice', true);
 }
 unlink($ini);
+ok('user_log_dir default', Config::fromArray([])->str('user_log_dir') === 'logs/wp-secmon'
+    && Config::fromArray(['user_log_dir' => ''])->str('user_log_dir') === '' && Config::fromArray(['user_log_dir' => 'wp-secmon-log'])->str('user_log_dir') === 'wp-secmon-log');
+foreach (['/var/log/x', 'logs/../../etc', './logs', 'logs/', 'logs//x', 'my logs'] as $bad) {
+    try {
+        Config::fromArray(['user_log_dir' => $bad]);
+        ok("user_log_dir '$bad' refused", false);
+    } catch (RuntimeException $e) {
+        ok("user_log_dir '$bad' refused", true);
+    }
+}
 
 // ---------------------------------------------------------------- alerts
 $state = sys_get_temp_dir() . '/wpg-test-' . getmypid();
@@ -554,7 +580,7 @@ $run = static function (array $settings) use ($state, $site, $shop, $blog, $unkn
     $a = new Alerts(Config::fromArray(['state_dir' => $state, 'log_dir' => $state, 'sendmail' => "$state/sendmail"] + $settings));
     $a->checksRun = ['integrity'];
     foreach ([$site, $shop, $blog, $unknown] as $s) {
-        $a->checked[$s->root] = true;
+        $a->checked[$s->root] = $s->user;
     }
     $a->setSite($site);
     foreach (IntegrityCheck::diffOptions(['admin_email' => 'old@a.example'], ['admin_email' => 'new@a.example']) as [$sev, $title, $lines, $meta]) {
@@ -599,6 +625,90 @@ $mail = (string) @file_get_contents("$state/mail.txt");
 ok('one e-mail per recipient', preg_match_all('/^To: (.+)$/m', $mail, $to) === 4
     && $to[1] === ['root', 'new@a.example', 'old@a.example', 'Owner@B.example'] && substr_count($mail, "\nCc: ") === 3, $to[1]);
 Util::rmTree($state);
+
+// ---------------------------------------------------------------- logs copied to the accounts
+$tmp = sys_get_temp_dir() . '/wpg-userlogs-' . getmypid();
+mkdir("$tmp/home", 0700, true);
+$home = (string) realpath("$tmp/home");
+$dir = "$home/logs/wp-secmon";
+$write = static function (array $in) use ($home): array {
+    return UserLogs::write((string) json_encode($in + ['home' => $home, 'path' => 'logs/wp-secmon', 'append' => '', 'files' => [], 'cap' => 1000]));
+};
+[$code] = $write(['append' => "line 1\n", 'files' => ['last-report-users.txt' => "report\n"]]);
+ok('account logs written', $code === 0 && file_get_contents("$dir/alerts.log") === "line 1\n" && file_get_contents("$dir/last-report-users.txt") === "report\n");
+ok('account logs private', (fileperms("$home/logs") & 0777) === 0700 && (fileperms($dir) & 0777) === 0700
+    && (fileperms("$dir/alerts.log") & 0777) === 0600 && (fileperms("$dir/last-report-users.txt") & 0777) === 0600);
+$write(['append' => "line 2\n"]);
+ok('alerts appended', file_get_contents("$dir/alerts.log") === "line 1\nline 2\n" && file_get_contents("$dir/last-report-users.txt") === "report\n");
+file_put_contents("$tmp/victim", "secret\n");
+unlink("$dir/alerts.log");
+symlink("$tmp/victim", "$dir/alerts.log");
+[$code] = $write(['append' => "line 3\n"]);
+ok('symbolic link replaced, not followed', $code === 0 && file_get_contents("$tmp/victim") === "secret\n" && !is_link("$dir/alerts.log")
+    && file_get_contents("$dir/alerts.log") === "line 3\n");
+$write(['append' => str_repeat("x\n", 600)]);
+ok('rotated at the cap, most recent lines kept', file_get_contents("$dir/alerts.log.1") === "line 3\n" && filesize("$dir/alerts.log") <= 1000
+    && substr((string) file_get_contents("$dir/alerts.log"), 0, 2) === "x\n", filesize("$dir/alerts.log"));
+chmod("$home/logs", 0770);
+[$code, $res] = $write(['append' => "line 4\n"]);
+ok('folder writable by others refused', $code === UserLogs::UNSAFE && $res['path'] === "$home/logs", $res);
+chmod("$home/logs", 0700);
+rename($dir, "$tmp/elsewhere");
+symlink("$tmp/elsewhere", $dir);
+ok('symbolic link to a folder refused', $write(['append' => "line 4\n"])[0] === UserLogs::UNSAFE && !is_file("$tmp/elsewhere/line 4"));
+unlink($dir);
+rename("$tmp/elsewhere", $dir);
+ok('odd input refused', $write(['path' => '../x'])[0] === UserLogs::BAD_INPUT && $write(['files' => ['../x.php' => 'x']])[0] === UserLogs::BAD_INPUT
+    && UserLogs::write('nope')[0] === UserLogs::BAD_INPUT);
+
+file_put_contents("$tmp/pending.log", "a\nb\n");
+$sent = (string) file_get_contents("$tmp/pending.log");
+file_put_contents("$tmp/pending.log", "c\n", FILE_APPEND);
+UserLogs::acknowledge("$tmp/pending.log", strlen($sent));
+ok('delivered lines removed, later ones kept', file_get_contents("$tmp/pending.log") === "c\n");
+
+$me = (array) Util::passwd(Util::effectiveUid());
+ok('never inside a WordPress root', UserLogs::unusable($dir, $me, [$home]) !== null && UserLogs::unusable($dir, $me, ["$home/logs/"]) !== null);
+ok('next to the sites', UserLogs::unusable($dir, $me, ["$home/log", "$home/public_html"]) === null);
+ok('not where the account cannot create it', UserLogs::unusable('/var/no-such-dir/logs', $me, []) !== null);
+
+// Each account gets its own sites, without the server notes.
+$state = "$tmp/state";
+$cfg = Config::fromArray(['state_dir' => $state, 'log_dir' => $state]);
+$mine = new WpSecMon\Site('/srv/mine', '/srv/mine/wp-config.php', $me['name']);
+$theirs = new WpSecMon\Site('/srv/theirs', '/srv/theirs/wp-config.php', 'nobody');
+Util::writeJson("$state/sites/{$theirs->id}/alerts/error.inventory.json", ['title' => 'Check failed: no inventory', 'severity' => 'warning']);
+$a = new Alerts($cfg);
+$a->checksRun = ['integrity'];
+$a->noMail = true;
+$a->checked = [$mine->root => $mine->user, $theirs->root => $theirs->user];
+$a->setSite($mine);
+$a->event('critical', 'Mine changed', '    detail of mine', ['kind' => 'admin-new']);
+$a->siteError('files', 'file scan failed');
+$a->setSite($theirs);
+$a->event('warning', 'Theirs changed', '', ['kind' => 'components']);
+$a->siteOk('inventory');
+$a->setSite(null);
+$a->alert('warning', 'vulndb-unreachable', 'Vulnerability database unreachable', '');
+$a->finish();
+$box = static function (string $account) use ($state): string {
+    return "$state/outbox/" . rawurlencode($account);
+};
+$minePending = (string) @file_get_contents($box($me['name']) . '/pending.log');
+$theirsPending = (string) @file_get_contents($box('nobody') . '/pending.log');
+$mineReport = (string) @file_get_contents($box($me['name']) . '/last-report-integrity.txt');
+ok('each account gets the alerts of its own sites', strpos($minePending, 'Mine changed') !== false && strpos($minePending, 'Theirs') === false
+    && strpos($theirsPending, 'Theirs changed') !== false && strpos($theirsPending, 'Mine') === false, [$minePending, $theirsPending]);
+ok('server notes are not for the accounts', strpos($minePending . $theirsPending, 'file scan failed') === false
+    && strpos($minePending . $theirsPending, 'Check failed') === false && strpos($minePending . $theirsPending, 'Vulnerability') === false);
+ok('a resolved server note stays a server note', strpos((string) file_get_contents("$state/last-report-integrity.txt"), 'Resolved: Check failed: no inventory') !== false);
+ok('each account gets the details of its own sites', strpos($mineReport, 'detail of mine') !== false && strpos($mineReport, '/srv/theirs') === false
+    && strpos($mineReport, 'Sites checked: 1.') !== false && strpos($mineReport, "{$me['home']}/logs/wp-secmon/alerts.log") !== false, $mineReport);
+$a = new Alerts(Config::fromArray(['state_dir' => "$tmp/off", 'log_dir' => "$tmp/off", 'user_log_dir' => '']));
+$a->setSite($mine);
+$a->event('critical', 'Mine changed', '', ['kind' => 'admin-new']);
+ok('nothing queued with user_log_dir empty', !file_exists("$tmp/off/outbox"));
+Util::rmTree($tmp);
 
 // ---------------------------------------------------------------- rediscovering one site
 $tmp = sys_get_temp_dir() . '/wpm-sites-' . getmypid();

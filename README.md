@@ -10,13 +10,13 @@ wp-secmon finds every WordPress install on the server and checks each site on a 
 - risky settings;
 - known vulnerabilities.
 
-Each run e-mails one report to root. The e-mail is written for people, not for logs: for each site, a status, what to do in plain language (for example "Update 5 plugins with known security holes" or "Confirm that each new administrator is legitimate"), a table of the plugins and themes to update, and one line per finding. You can forward it to the site owner as is, or have wp-secmon send each site administrator the report of their own sites (`alert_site_admins`). Reports are in English or French (`language` setting). File lists, CVEs and other details stay in `/var/log/wp-secmon`.
+Each run e-mails one report to root. The e-mail is written for people, not for logs: for each site, a status, what to do in plain language (for example "Update 5 plugins with known security holes" or "Confirm that each new administrator is legitimate"), a table of the plugins and themes to update, and one line per finding. You can forward it to the site owner as is, or have wp-secmon send each site administrator the report of their own sites (`alert_site_admins`). Reports are in English or French (`language` setting). File lists, CVEs and other details stay in `/var/log/wp-secmon`, and each site owner's account gets those of its own sites in `~/logs/wp-secmon`.
 
 It works on cPanel/CloudLinux/Imunify360 servers and on plain LAMP/LEMP servers. It ships as a single `wp-secmon.phar` and needs only PHP 7.4+, which is already there wherever WordPress runs, and WP-CLI, which the installer downloads if needed.
 
 **Guarantees**
 
-- **Read-only.** wp-secmon never modifies a site: no files, no database rows, no cron, no outgoing HTTP from WordPress. See [How it stays read-only](#how-it-stays-read-only).
+- **Read-only.** wp-secmon never modifies a site: no files, no database rows, no cron, no outgoing HTTP from WordPress. The one thing it writes outside its own directories is the logs of each account's sites, in `~/logs/wp-secmon`, as that account and never inside a WordPress root. See [How it stays read-only](#how-it-stays-read-only).
 - **Never root.** Every WP-CLI call and every file read inside a site runs as the site's owner, with `--skip-plugins --skip-themes`. wp-secmon refuses to run anything as root, or as an account that is as good as root (`sudo`, `docker`, `lxd`...), even when misconfigured. Site code never gets a terminal, so it cannot reach the shell of an admin running wp-secmon by hand.
 
 ## Checks
@@ -25,7 +25,7 @@ It works on cPanel/CloudLinux/Imunify360 servers and on plain LAMP/LEMP servers.
 |---|---|---|
 | `users` | hourly | Administrator accounts (`privileged_roles`) created, deleted, renamed or modified, e-mail changes on them, and accounts granted or losing privileges. Other accounts are ignored unless `users_alert_new = all`. Based on `wp user list`, normalized and checksummed; the diff runs only when the checksum changes. |
 | `integrity` | hourly | Changes to site URL, admin e-mail, registration and default role. Open registration with a powerful default role. Plugins and themes installed, removed, activated or deactivated. Changes to `wp-config.php`, `.htaccess`/`.user.ini`/`php.ini`, non-core PHP files in the site root and in `wp-content`, drop-ins and must-use plugins (sha256 baseline). Executable files in uploads (`.php`, `.phtml`, `x.php.jpg`...), except harmless PHP recognized by its content (see below) and files accepted with `wp-secmon review`. |
-| `checksums` | daily | `wp core verify-checksums` and `wp plugin verify-checksums --all`. Reports modified core files, extra files in `wp-admin` and `wp-includes`, and modified wordpress.org plugins. |
+| `checksums` | daily | `wp core verify-checksums` and `wp plugin verify-checksums --all`. Reports modified core files, extra files in `wp-admin` and `wp-includes`, and modified wordpress.org plugins. Deleting `readme.html`, `license.txt` or `wp-config-sample.php` (often done to hide the WordPress version) is not reported; modifying them is. |
 | `vulns` | daily | Known vulnerabilities in the installed core, plugin and theme versions ([wpvulnerability.net](https://www.wpvulnerability.net), free, no API key). Plugins and themes closed on wordpress.org. Core missing security releases. |
 | `discover` | daily | New or removed WordPress installs, and sites that cannot be monitored (for example, owned by root). |
 
@@ -38,6 +38,8 @@ It works on cPanel/CloudLinux/Imunify360 servers and on plain LAMP/LEMP servers.
 | **info** | Plugin or theme updated or removed, theme switched, problem resolved. |
 
 A report is e-mailed when it contains at least one alert at `mail_min_severity` (default: warning). The e-mail is HTML with a plain-text version of the same summary. Set `mail_format = text` to get the full details in plain text instead. The full details of each report are also kept in `/var/log/wp-secmon/last-report-*.txt`, and every alert is written to `/var/log/wp-secmon/alerts.log` and to the journal.
+
+**Logs for each account:** the account a site is checked as (the cPanel account, or the owner of the WordPress files) gets the alerts and full details of its own sites in `~/logs/wp-secmon`: `alerts.log` (rotated to `alerts.log.1` at 1 MB) and `last-report-*.txt`. Nothing about other accounts or the server itself goes there. The folder appears with the account's first alert. The files are written as the account, never as root, and only when every folder on the way belongs to the account and no one else can write to it. Accounts whose home is inside a WordPress root, or that cannot create the folder (such as `www-data` with a root-owned `/var/www`), get nothing. Set `user_log_dir` to another folder of the home, or leave it empty to turn this off.
 
 **One-off changes** (a new admin, a modified `wp-config.php`) are reported once, and the new state becomes the baseline.
 
@@ -90,7 +92,7 @@ wp-secmon all --no-mail         # records the baselines and prints the first rep
 - timers stay enabled or disabled as they were, and only timers added by the new version are enabled;
 - the upgrade refuses to run while a check is running, because replacing the phar would break it. Try again when the check has finished.
 
-**Uninstall:** `wp-secmon uninstall`. Add `--purge` to also delete `/etc/wp-secmon`, `/var/lib/wp-secmon` and `/var/log/wp-secmon`. WP-CLI is left in place.
+**Uninstall:** `wp-secmon uninstall`. Add `--purge` to also delete `/etc/wp-secmon`, `/var/lib/wp-secmon` and `/var/log/wp-secmon`. WP-CLI is left in place, and so are the logs in the accounts' homes.
 
 ## Usage
 
@@ -135,6 +137,7 @@ Every setting is documented in [`resources/etc/wp-secmon.ini`](resources/etc/wp-
 - `alert_site_admins = yes`: send the report of each site to its WordPress administration e-mail address (Settings > General) instead of `alert_email`. An address with several sites gets one e-mail for all of them, and nothing about the other sites. `alert_site_admins_cc[]` adds a copy (Cc), for you or your team. `alert_email` still gets the notes about the monitoring itself, and the sites whose address is not known yet (the `integrity` check reads it) or is not a plain address. When a site changes its address, the report that says so goes to both the old and the new one.
 - `privileged_roles[]`: only these accounts are reported (default `administrator`, plus network super admins). Add `editor` or `shop_manager` if you consider them privileged.
 - `users_alert_new = all`: also report the other accounts created, deleted or modified. New ones are reported with `users_new_severity` (default `warning`).
+- `user_log_dir`: where each account gets the logs of its own sites, relative to its home (default `logs/wp-secmon`; empty = off).
 - `alert_command`: also push each report to Slack, ntfy, a ticketing system, etc. The text summary arrives on stdin. The command runs as root and the report quotes text controlled by the sites, so pass it along as data, never evaluate it.
 
 ### Which account a site is checked as
@@ -173,10 +176,10 @@ On the file and process side:
 
 - File hashing and the uploads scan run as the site owner, through the hidden `wp-secmon __scan-files` command. That command does not load WordPress ([`src/FileScanner.php`](src/FileScanner.php)).
 - Discovery only lists directories and never follows symbolic links.
-- Commands run without a shell (`proc_open` with an argument array), with a clean environment, `cwd=/`, no stdin and a timeout. Output goes to files, so a process left behind by site code cannot hang a run.
+- Commands run without a shell (`proc_open` with an argument array), with a clean environment, `cwd=/`, no stdin (wp-secmon's own helper that writes the logs of an account reads them from a file opened by root) and a timeout. Output goes to files, so a process left behind by site code cannot hang a run.
 - Site code runs in a new session without a controlling terminal (`setsid`). Without `setsid`, wp-secmon refuses to check sites from a terminal.
 - Each output file is capped at `max_output_mb` (`prlimit`), so a site cannot fill the disk or exhaust wp-secmon's memory and stop the report.
-- The systemd service mounts `/home`, `/var/www` and `/srv` read-only for the whole process tree, WP-CLI included. It also uses `NoNewPrivileges`, `ProtectSystem=full` and `PrivateTmp`.
+- The systemd service mounts `/home`, `/var/www` and `/srv` read-only for the whole process tree, WP-CLI included. It also uses `NoNewPrivileges`, `ProtectSystem=full` and `PrivateTmp`. The logs of each account are copied to its home after the check (`ExecStopPost`), outside that sandbox: that step only runs wp-secmon's own helper, as each account, never site code.
 
 **Limits:**
 
@@ -196,6 +199,8 @@ On the file and process side:
 | `/var/lib/wp-secmon/cache/` | Vulnerability data and the WordPress release list |
 | `/var/log/wp-secmon/alerts.log` | Every alert raised |
 | `/var/log/wp-secmon/last-report-*.txt` | Full details of the last report of each check (the e-mail is a summary) |
+| `/var/lib/wp-secmon/outbox/` | Logs waiting to be copied to the accounts |
+| `~/logs/wp-secmon/` (each account) | `alerts.log`, `alerts.log.1` and `last-report-*.txt` of the account's own sites, owned by the account |
 
 To reset the baselines of one site, delete its directory under `/var/lib/wp-secmon/sites/`. Its `site.json` file shows which site it is.
 

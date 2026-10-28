@@ -131,8 +131,9 @@ function snapshot(): array
 {
     $tables = array_filter(explode("\n", sql("SELECT CONCAT(table_schema, '.', table_name) FROM information_schema.tables WHERE table_schema LIKE 'wp\\_%'")));
     $db = sql('CHECKSUM TABLE ' . implode(', ', $tables) . ' EXTENDED');
-    [, $files] = sh(['find', '/home', '/var/www', '-printf', '%p %s %T@ %m %U:%G\n']);
-    $files = explode("\n", $files);
+    // Except the logs each account gets in ~/logs (which changes the size and time of its home).
+    [, $files] = sh(['find', '/home', '/var/www', '-regex', '/home/[^/]*/logs', '-prune', '-o', '-printf', '%p %s %T@ %m %U:%G\n']);
+    $files = explode("\n", (string) preg_replace('#^(/home/[^/ ]+) \d+ [\d.]+ #m', '$1 - - ', $files));
     sort($files);
     return ['db' => $db, 'files' => $files];
 }
@@ -232,6 +233,7 @@ step('doctor');
 echo $out;
 expect('doctor passes', $code === 0, $out);
 expect('doctor uses setpriv', has($out, 'user switching: setpriv'));
+expect('doctor shows where the accounts get their logs', has($out, 'each account gets the logs of its own sites in ~/logs/wp-secmon'), $out);
 
 step('discovery');
 [, $out, $mail, $details] = wpsecmon('sites');
@@ -258,6 +260,22 @@ expect('no check failed', !has($out . $details, 'Check failed'), $out . $details
 expect('clean installs match the official checksums', !has($details, 'checksums:'), $details);
 expect('no account alerts on the baseline run', !has($details, 'account'), $details);
 expect('harmless PHP in uploads not reported (stub, Twig cache, Sucuri data, dompdf fonts)', !has($details, 'executable file'), $details);
+
+step('logs of each account');
+const ALICE_LOGS = '/home/alice/logs/wp-secmon';
+$aliceLog = (string) @file_get_contents(ALICE_LOGS . '/alerts.log');
+$aliceReport = implode('', array_map('file_get_contents', glob(ALICE_LOGS . '/last-report-*.txt') ?: []));
+$bobLogs = implode('', array_map('file_get_contents', glob('/home/bob/logs/wp-secmon/*') ?: []));
+$dirSt = @stat(ALICE_LOGS);
+$logSt = @stat(ALICE_LOGS . '/alerts.log');
+expect('alice gets the alerts and details of her site', has($aliceLog, 'site=' . ALICE . ' user=alice') && has($aliceReport, 'CVE-2020-35489'), $aliceLog . $aliceReport);
+expect('written as alice, for alice only', $dirSt && $dirSt['uid'] === 1001 && ($dirSt['mode'] & 0777) === 0700
+    && $logSt && $logSt['uid'] === 1001 && ($logSt['mode'] & 0777) === 0600);
+expect('nothing about the other sites or the server', !has($aliceLog . $aliceReport, BOB) && !has($aliceLog . $aliceReport, ROOTSITE)
+    && !has($aliceLog . $aliceReport, 'not monitored'), $aliceLog . $aliceReport);
+expect('bob gets nothing about alice', !has($bobLogs, ALICE), $bobLogs);
+expect('the outbox is emptied once delivered', !glob('/var/lib/wp-secmon/outbox/*/last-report-*.txt')
+    && implode('', array_map('file_get_contents', glob('/var/lib/wp-secmon/outbox/*/pending.log') ?: [])) === '');
 
 step('second run changes nothing and repeats nothing');
 $before = snapshot();
@@ -291,6 +309,8 @@ sql("USE wp_alice; INSERT INTO wp_users (user_login, user_pass, user_nicename, u
      INSERT INTO wp_usermeta (user_id, meta_key, meta_value) VALUES (LAST_INSERT_ID(), 'wp_capabilities', 'a:1:{s:13:\"administrator\";b:1;}');");
 put(ALICE . '/wp-includes/functions.php', "\n// injected\n", 'alice', true);
 put(ALICE . '/wp-admin/shell.php', "<?php system(\$_GET['c']);\n", 'alice');
+// Not an attack: removed to hide the WordPress version, which must not be reported.
+unlink(ALICE . '/readme.html');
 put(ALICE . '/radio.php', "<?php eval(\$_POST['x']);\n", 'alice');
 put(ALICE . '/wp-config.php', "\n// tampered\n", 'alice', true);
 // A web shell dressed as a Sucuri data file: its exit comes too late.
@@ -354,9 +374,20 @@ step('repeat and resolve');
 expect('unchanged problems are not repeated', $mail === '', $mail);
 sh(['cp', '/opt/wp-core/wp-includes/functions.php', ALICE . '/wp-includes/functions.php']);
 unlink(ALICE . '/wp-admin/shell.php');
+// Under systemd the homes are read-only during the check: the unit delivers the logs afterwards.
+clearstatcache();
+$logSize = filesize(ALICE_LOGS . '/alerts.log');
+putenv('WP_SECMON_DEFER_USER_LOGS=1');
 [, $out, , $details] = wpsecmon('checksums', '--print', '--no-mail');
-expect('fixed core reported as resolved', has($details, 'Resolved: WordPress core files do not match')
-    && has($out, 'Fixed since the last report') && has($out, '✓ WordPress core files do not match'), $out);
+putenv('WP_SECMON_DEFER_USER_LOGS');
+expect('fixed core reported as resolved, with readme.html still missing', has($details, 'Resolved: WordPress core files do not match')
+    && has($out, 'Fixed since the last report') && has($out, '✓ WordPress core files do not match') && !has($out . $details, 'Check failed'), $out);
+clearstatcache();
+expect('logs kept for later when delivery is deferred', filesize(ALICE_LOGS . '/alerts.log') === $logSize
+    && has((string) @file_get_contents('/var/lib/wp-secmon/outbox/alice/pending.log'), 'Resolved: WordPress core files do not match'));
+[$code] = sh(['wp-secmon', '__publish-logs']);
+expect('logs delivered after the check', $code === 0 && has((string) file_get_contents(ALICE_LOGS . '/alerts.log'), 'Resolved: WordPress core files do not match')
+    && file_get_contents('/var/lib/wp-secmon/outbox/alice/pending.log') === '');
 [, $out] = wpsecmon('status');
 echo $out;
 expect('status lists open alerts', has($out, 'executable file(s) in the uploads directory') && !has($out, 'WordPress core files'), $out);
@@ -382,6 +413,28 @@ expect('address change reported to the old and the new address', substr_count($m
 [$code, $out] = wpsecmon('doctor');
 expect('doctor shows who is e-mailed', has($out, 'each site is reported to its WordPress administration address, with a copy to soc@example.test'), $out);
 file_put_contents('/etc/wp-secmon/wp-secmon.ini', $ini);
+
+// ---------------------------------------------------------------------------
+step('logs of the accounts cannot be turned against root');
+// Bob plants a symbolic link where his logs go: the copy is made as bob, so it cannot reach /etc/passwd.
+sh(['runuser', '-u', 'bob', '--', 'mkdir', '-p', '/home/bob/logs/wp-secmon']);
+sh(['runuser', '-u', 'bob', '--', 'ln', '-sfn', '/etc/passwd', '/home/bob/logs/wp-secmon/alerts.log']);
+$passwd = hash_file('sha256', '/etc/passwd');
+wp('bob', BOB, ['plugin', 'deactivate', 'hello', '--quiet']);
+[$code, $out] = wpsecmon('integrity', '--no-mail', '--site', BOB);
+clearstatcache();
+expect('a symbolic link in the logs folder is replaced, not followed', $code === 0 && hash_file('sha256', '/etc/passwd') === $passwd
+    && !is_link('/home/bob/logs/wp-secmon/alerts.log') && has((string) @file_get_contents('/home/bob/logs/wp-secmon/alerts.log'), 'deactivated'), $out);
+// A folder others can write to could be swapped for theirs: refused, without failing the check.
+chmod('/home/bob/logs', 0777);
+wp('bob', BOB, ['plugin', 'activate', 'hello', '--quiet']);
+[$code, $out] = wpsecmon('integrity', '--no-mail', '--site', BOB);
+expect('a logs folder others can write to is refused', $code === 0 && has($out, 'the logs of bob could not be copied')
+    && has($out, '/home/bob/logs must be a directory of bob that no other account can write to')
+    && !has((string) file_get_contents('/home/bob/logs/wp-secmon/alerts.log'), '1 plugin(s) activated'), $out);
+chmod('/home/bob/logs', 0700);
+[$code, $out] = wpsecmon('integrity', '--no-mail', '--site', BOB);
+expect('kept and delivered once fixed', has((string) file_get_contents('/home/bob/logs/wp-secmon/alerts.log'), '1 plugin(s) activated'), $out);
 
 // ---------------------------------------------------------------------------
 step('French');
@@ -461,6 +514,9 @@ step('rescan one site');
 expect('all --site rescans only that site', $code === 0 && has($out, 'rediscovered 1 site') && !has($out, 'discovery:')
     && has($out, 'finished discover, users, integrity, checksums, vulns: 1 site(s) checked'), $out);
 expect('rescan reports on that site only', !has($details, ALICE) && !has($details, 'Check failed'), $details);
+// www-data cannot create a folder in its home (/var/www on Debian, missing on EL), nor in a WordPress root.
+expect('no logs where the account cannot write them', !file_exists('/var/www/logs') && !file_exists('/home/www-data')
+    && !is_dir('/var/lib/wp-secmon/outbox/www-data'));
 
 // ---------------------------------------------------------------------------
 step('privilege guards');
@@ -545,6 +601,7 @@ expect('uninstall removes the program and keeps the configuration', !file_exists
 sh(['php', '/root/wp-secmon.phar', 'uninstall', '--purge']);
 expect('--purge removes configuration, state and logs', !is_dir('/etc/wp-secmon') && !is_dir('/var/lib/wp-secmon') && !is_dir('/var/log/wp-secmon'));
 expect('sites untouched by uninstall', is_file(ALICE . '/wp-config.php') && is_file(BOB . '/wp-load.php'));
+expect('the accounts keep their logs', is_file(ALICE_LOGS . '/alerts.log'));
 
 echo "\n$passed passed, $failed failed\n";
 exit($failed ? 1 : 0);

@@ -170,6 +170,10 @@ return [
         => 'fin de %s : %d site(s) vérifié(s), %d erreur(s); alertes : %d critique(s), %d avertissement(s), %d info (%d inchangée(s) non répétée(s))',
     '%s: %s - %s, %s (%s)' => '%s : %s - %s, %s (%s)',
     'alert_command failed: %s' => 'échec d’alert_command : %s',
+    'the logs of the accounts could not be copied: %s' => 'les journaux des comptes n’ont pas pu être copiés : %s',
+    'the logs of %s could not be copied to %s: %s' => 'les journaux de %s n’ont pas pu être copiés dans %s : %s',
+    '%s must be a directory of %s that no other account can write to' => '%s doit être un dossier de %s qu’aucun autre compte ne peut modifier',
+    'cannot write %s: %s' => 'impossible d’écrire %s : %s',
     'report sent to %s' => 'rapport envoyé à %s',
     'sending the report with %s failed: %s' => 'échec de l’envoi du rapport avec %s : %s',
     'report sent to %s with mail()' => 'rapport envoyé à %s avec mail()',
@@ -353,6 +357,7 @@ return [
     "%s: unknown setting '%s' ignored" => '%s : réglage inconnu « %s » ignoré',
     '%s: invalid value for %s (expected %s)' => '%s : valeur invalide pour %s (attendu : %s)',
     'cannot create directory %s' => 'impossible de créer le dossier %s',
+    'a directory relative to the home, such as logs/wp-secmon' => 'un dossier relatif au dossier personnel, comme logs/wp-secmon',
     '%s must be owned by root and not group/world writable (uid %d, mode %o)'
         => '%s doit appartenir à root et ne pas être modifiable par le groupe ou les autres (uid %d, mode %o)',
 
@@ -573,6 +578,9 @@ Options :
     '%s not found, using PHP mail()' => '%s introuvable, PHP mail() est utilisé',
     '%s not found' => '%s introuvable',
     '%s %s is not writable' => '%s %s n’est pas accessible en écriture',
+    'each account gets the logs of its own sites in ~/%s' => 'chaque compte reçoit les journaux de ses propres sites dans ~/%s',
+    'the accounts do not get the logs of their sites (user_log_dir is empty)'
+        => 'les comptes ne reçoivent pas les journaux de leurs sites (user_log_dir est vide)',
     '%s reachable' => '%s accessible',
     '%s unreachable (outdated core not reported)' => '%s inaccessible (versions de WordPress périmées non signalées)',
     '%s unreachable (vulnerabilities not reported)' => '%s inaccessible (vulnérabilités non signalées)',

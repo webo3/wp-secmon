@@ -24,3 +24,11 @@ PrivateTmp=yes
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectControlGroups=yes
+
+# Each account gets the logs of its own sites in its home (user_log_dir). The
+# homes are read-only above, so they are copied after the check: "+" runs this
+# outside the sandbox, where it only runs wp-secmon's own helper, as each
+# account, never site code. "-": a failed copy does not fail the check.
+Environment=WP_SECMON_DEFER_USER_LOGS=1
+ExecStopPost=-+@PHP@ -d disable_functions= -d open_basedir= @BIN@ --quiet __publish-logs
+TimeoutStopSec=30min

@@ -39,7 +39,7 @@ abstract class Check
             } catch (\Throwable $e) {
                 $alerts->siteError(static::name(), I18n::t('internal error: %s', $e->getMessage()));
             }
-            $alerts->checked[$site->root] = true;
+            $alerts->checked[$site->root] = $site->user;
         }
         $alerts->setSite(null);
         $this->after($sites);

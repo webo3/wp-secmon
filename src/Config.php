@@ -47,6 +47,7 @@ final class Config
         // Storage
         'state_dir' => '/var/lib/wp-secmon',
         'log_dir' => '/var/log/wp-secmon',
+        'user_log_dir' => 'logs/wp-secmon',
 
         // Alerting
         'alert_email' => 'root',
@@ -73,6 +74,7 @@ final class Config
 
         // checksums check
         'core_checksum_ignore' => ['*/error_log'],
+        'core_checksum_ignore_missing' => ['readme.html', 'license.txt', 'wp-config-sample.php'],
         'plugin_checksum_strict' => false,
         'plugin_checksum_exclude' => [],
         'plugin_checksum_ignore' => ['*/error_log'],
@@ -165,6 +167,9 @@ final class Config
         }
         if (isset(self::CHOICES[$key]) && !in_array($value, self::CHOICES[$key], true)) {
             throw new \RuntimeException(I18n::t('%s: invalid value for %s (expected %s)', $file, $key, implode(', ', self::CHOICES[$key])));
+        }
+        if ($key === 'user_log_dir' && $value !== '' && !UserLogs::validPath($value)) {
+            throw new \RuntimeException(I18n::t('%s: invalid value for %s (expected %s)', $file, $key, I18n::t('a directory relative to the home, such as logs/wp-secmon')));
         }
         $values[$key] = $value;
     }

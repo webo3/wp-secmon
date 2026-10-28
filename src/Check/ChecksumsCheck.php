@@ -31,9 +31,10 @@ final class ChecksumsCheck extends Check
     private function core(Site $site): void
     {
         $alerts = $this->ctx->alerts;
+        $cfg = $this->ctx->cfg;
         for ($attempt = 1; ; $attempt++) {
             $r = $this->ctx->wp->run($site, ['core', 'verify-checksums']);
-            $parsed = self::parseCore($r->stdout . "\n" . $r->stderr, $this->ctx->cfg->list('core_checksum_ignore'));
+            $parsed = self::parseCore($r->stdout . "\n" . $r->stderr, $cfg->list('core_checksum_ignore'), $cfg->list('core_checksum_ignore_missing'));
             // One retry when api.wordpress.org could not be reached.
             if ($attempt > 1 || $parsed['error'] === null || !preg_match("/Failed to get url|cURL error|Couldn't get checksums/i", $parsed['error'])) {
                 break;
@@ -43,7 +44,8 @@ final class ChecksumsCheck extends Check
         }
 
         $found = count($parsed['modified']) + count($parsed['extra']) + count($parsed['missing']);
-        if ($parsed['error'] !== null || (!$r->ok() && $found === 0 && !$parsed['success'])) {
+        // WP-CLI also fails ("doesn't verify") when every difference is ignored.
+        if ($parsed['error'] !== null || (!$r->ok() && $found === 0 && !$parsed['success'] && !$parsed['mismatch'])) {
             $alerts->siteError('core-checksums', I18n::t('wp core verify-checksums failed: %s', $parsed['error'] ?? $r->reason()), $r->details());
             return;
         }
@@ -64,10 +66,13 @@ final class ChecksumsCheck extends Check
         ), $lines, null, null, ['modified' => count($parsed['modified']), 'extra' => count($parsed['extra']), 'missing' => count($parsed['missing'])]);
     }
 
-    /** Parse the plain-text output of `wp core verify-checksums`. */
-    public static function parseCore(string $output, array $ignore = []): array
+    /**
+     * Parse the plain-text output of `wp core verify-checksums`.
+     * @param array $ignoreMissing files not reported when missing (still reported when modified)
+     */
+    public static function parseCore(string $output, array $ignore = [], array $ignoreMissing = []): array
     {
-        $res = ['modified' => [], 'extra' => [], 'missing' => [], 'success' => false, 'error' => null];
+        $res = ['modified' => [], 'extra' => [], 'missing' => [], 'success' => false, 'mismatch' => false, 'error' => null];
         foreach (preg_split('/\R/', $output) ?: [] as $line) {
             $line = trim($line);
             if (preg_match("/^Warning:\s+File doesn't verify against checksum: (.+)$/", $line, $m)) {
@@ -79,10 +84,16 @@ final class ChecksumsCheck extends Check
             } elseif (preg_match('/^Success:\s/', $line)) {
                 $res['success'] = true;
                 continue;
-            } elseif (preg_match("/^Error:\s+(?!WordPress installation doesn't verify)(.+)$/", $line, $m)) {
+            } elseif (preg_match("/^Error:\s+WordPress installation doesn't verify/", $line)) {
+                $res['mismatch'] = true;
+                continue;
+            } elseif (preg_match('/^Error:\s+(.+)$/', $line, $m)) {
                 $res['error'] = Util::oneLine($m[1], 200);
                 continue;
             } else {
+                continue;
+            }
+            if ($kind === 'missing' && Util::matchAny($m[1], $ignoreMissing)) {
                 continue;
             }
             if (!Util::matchAny($m[1], $ignore)) {
