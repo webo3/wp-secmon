@@ -587,12 +587,14 @@ mkdir('/home/alice/shop/wp-content');
 chown('/home/alice/shop/wp-content', 'alice');
 chgrp('/home/alice/shop/wp-content', 'www-data');
 chmod('/home/alice/shop/wp-content', 0775);
-// Writable by alice's own group only: fine.
+// Writable by alice's own group, which www-data was added to so that the web server can read the files: fine.
 fakeSite('/home/alice/team', 'alice');
 chmod('/home/alice/team', 0775);
+sh(['usermod', '-aG', 'alice', 'www-data']);
 wpsecmon('discover');
 [, $out] = wpsecmon('sites');
 echo $out;
+sh(['gpasswd', '-d', 'www-data', 'alice']);
 expect('member of a root-equivalent group is refused', has($out, "/home/carol/public_html\n      refusing to check a site as 'carol': member of docker"), $out);
 expect('site another account could swap is refused', has($out, "/home/bob/swap/site\n      /home/bob belongs to 'bob'"), $out);
 expect('site whose code another account can change is refused', has($out, "/home/alice/shop\n      /home/alice/shop/wp-content is writable by the group"

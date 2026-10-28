@@ -290,8 +290,10 @@ final class RunAs
 
     /**
      * Whether $gid is the account's own group: its primary group, named after
-     * it and without other members (user private groups). A primary group that
-     * accounts share, such as "users", lets each of them write.
+     * it (user private groups). A primary group that accounts share, such as
+     * "users", lets each of them write. Members an admin adds to the account's
+     * own group (www-data, so that the web server can read the files) are
+     * trusted like the account: they can already change all its files.
      */
     private static function ownGroup(int $gid, array $pw): bool
     {
@@ -301,8 +303,7 @@ final class RunAs
         static $cache = [];
         $key = "$gid\0{$pw['name']}";
         if (!isset($cache[$key])) {
-            $group = Util::group($gid);
-            $cache[$key] = $group !== null && $group['name'] === $pw['name'] && array_diff($group['members'], [$pw['name']]) === [];
+            $cache[$key] = (Util::group($gid)['name'] ?? null) === $pw['name'];
         }
         return $cache[$key];
     }
