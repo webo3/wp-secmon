@@ -196,14 +196,18 @@ rename(BOB . '/wp-config.php', dirname(BOB) . '/wp-config.php');
 put(dirname(BOB) . '/wp-config.php', preg_replace('/^<\?php\n/', "<?php\ndefine( 'WP_TOOLKIT_API_TOKEN', 'eyJ.first.sig' );\n",
     (string) file_get_contents(dirname(BOB) . '/wp-config.php')), 'bob');
 // Alice runs a vulnerable Contact Form 7 and has harmless PHP in uploads: a "Silence is golden" stub,
-// a compiled Twig template (WPML cache), Sucuri data files and dompdf font metrics.
+// compiled Twig templates (WPML and MailPoet caches), Sucuri data files and dompdf font metrics.
 wp('alice', ALICE, ['plugin', 'install', 'contact-form-7', '--version=5.3.1', '--activate', '--quiet']);
 sh(['runuser', '-u', 'alice', '--', 'mkdir', '-p', ALICE . '/wp-content/uploads/2026/09', ALICE . '/wp-content/uploads/cache/wpml/twig/3f',
-    ALICE . '/wp-content/uploads/sucuri', ALICE . '/wp-content/uploads/wpo_wcpdf_0123/fonts']);
+    ALICE . '/wp-content/uploads/mailpoet/cache/da', ALICE . '/wp-content/uploads/sucuri', ALICE . '/wp-content/uploads/wpo_wcpdf_0123/fonts']);
 put(ALICE . '/wp-content/uploads/2026/index.php', "<?php\n// Silence is golden.\n", 'alice');
 put(ALICE . '/wp-content/uploads/cache/wpml/twig/3f/3f' . substr(hash('sha256', 'tpl'), 2) . '.php',
     "<?php\n\nnamespace WPML\\Core;\n\nuse \\WPML\\Core\\Twig\\Template;\n\n/* slot.twig */\n"
     . 'class __TwigTemplate_' . hash('sha256', 'slot') . " extends \\WPML\\Core\\Twig\\Template\n{\n}\n", 'alice');
+put(ALICE . '/wp-content/uploads/mailpoet/cache/da/da' . substr(hash('sha256', 'preview'), 2) . '.php',
+    "<?php\n\nuse MailPoetVendor\\Twig\\Environment;\nuse MailPoetVendor\\Twig\\Template;\n\n/* form/templates/preview.hbs */\n"
+    . 'class __TwigTemplate_' . hash('sha256', 'preview') . " extends \\MailPoetVendor\\Twig\\Template\n{\n"
+    . "    protected function doDisplay(array \$context, array \$blocks = [])\n    {\n        echo \"<p>{\$context['form']}</p>\";\n    }\n}\n", 'alice');
 put(ALICE . '/wp-content/uploads/sucuri/sucuri-lastlogins.php', "<?php exit(0); ?>\n", 'alice');
 put(ALICE . '/wp-content/uploads/sucuri/sucuri-integrity.php', "<?php\n// datastore=integrity;\n// created_on=1790000000;\nexit(0);\n?>\n"
     . "wp-config.php:{\"checksum\":\"abc\"}\n", 'alice');

@@ -367,13 +367,16 @@ file_put_contents("$tmp/site/wp-content/uploads/index.php", "<?php\n// Silence i
 file_put_contents("$tmp/site/wp-content/uploads/2026/index.php", "<?php // Silence is golden\neval(\$_GET[1]);\n");
 file_put_contents("$tmp/site/wp-content/uploads/2026/photo.php.jpg", 'x');
 file_put_contents("$tmp/site/wp-content/uploads/2026/photo.jpg", 'x');
-// Compiled Twig templates (WPML cache) are harmless; look-alikes are not.
+// Compiled Twig templates (WPML and MailPoet caches) are harmless; look-alikes are not.
 $twig = "$tmp/site/wp-content/uploads/cache/wpml/twig";
 mkdir("$twig/00", 0700, true);
 mkdir("$twig/ab", 0700, true);
 $template = "<?php\n\nnamespace WPML\\Core;\n\nuse \\WPML\\Core\\Twig\\Environment;\nuse \\WPML\\Core\\Twig\\Source;\n"
     . "use \\WPML\\Core\\Twig\\Template;\n\n/* table-slot.twig */\nclass __TwigTemplate_" . hash('sha256', 'a')
-    . " extends \\WPML\\Core\\Twig\\Template\n{\n    public function __construct(Environment \$env)\n    {\n";
+    . " extends \\WPML\\Core\\Twig\\Template\n{\n    public function __construct(Environment \$env)\n    {\n"
+    . "        parent::__construct(\$env);\n        \$this->blocks = [\n        ];\n    }\n\n"
+    . "    protected function doDisplay(array \$context, array \$blocks = [])\n    {\n"
+    . "        echo \"<td>{\$context['slot']}</td>\";\n    }\n}\n";
 $h1 = '00' . substr(hash('sha256', '1'), 2);
 $h2 = 'ab' . substr(hash('sha256', '2'), 2);
 $h3 = '00' . substr(hash('sha256', '3'), 2);
@@ -381,6 +384,13 @@ file_put_contents("$twig/00/$h1.php", $template);
 file_put_contents("$twig/ab/$h2.php", "<?php\n/* x */ passthru(\$_GET['c']); /* y */\n" . substr($template, 6));
 file_put_contents("$twig/ab/$h3.php", $template);
 file_put_contents("$twig/00/shell.php", $template);
+$mailpoet = "$tmp/site/wp-content/uploads/mailpoet/cache/00";
+mkdir($mailpoet, 0700, true);
+$mpTemplate = "<?php\n\nuse MailPoetVendor\\Twig\\Environment;\nuse MailPoetVendor\\Twig\\Template;\n\n/* form/templates/preview.hbs */\n"
+    . 'class __TwigTemplate_' . hash('sha256', 'b') . " extends \\MailPoetVendor\\Twig\\Template\n{\n}\n";
+file_put_contents("$mailpoet/$h1.php", $mpTemplate);
+// A template followed by code: requested, the file declares the class, then runs the code.
+file_put_contents("$mailpoet/$h3.php", $mpTemplate . "system(\$_GET['c']);\n");
 // PHP data files that cannot run code, whatever their path: Sucuri logs and dompdf font metrics.
 mkdir("$tmp/site/wp-content/uploads/sucuri", 0700, true);
 file_put_contents("$tmp/site/wp-content/uploads/sucuri/sucuri-lastlogins.php", "<?php exit(0); ?>\n");
@@ -403,6 +413,8 @@ ok('file scan', $found === [
     "uploads:wp-content/uploads/cache/wpml/twig/ab/$h3.php",
     "uploads:wp-content/uploads/cache/wpml/twig/ab/$h2.php",
     'uploads:wp-content/uploads/index.php:benign',
+    "uploads:wp-content/uploads/mailpoet/cache/00/$h3.php",
+    "uploads:wp-content/uploads/mailpoet/cache/00/$h1.php:benign",
     'uploads:wp-content/uploads/sucuri/sucuri-integrity.php:benign',
     'uploads:wp-content/uploads/sucuri/sucuri-lastlogins.php:benign',
     'uploads:wp-content/uploads/sucuri/sucuri-shell.php',
@@ -446,6 +458,28 @@ foreach ($inert as $code => $expect) {
 ok('inert PHP recognized by what runs first', $wrong === [], $wrong);
 ok('a returned value is only trusted when read whole', !WpSecMon\FileScanner::inert('<?php return array (1);', false)
     && WpSecMon\FileScanner::inert('<?php exit; ', false));
+
+// A Twig template is its class and nothing more: anything after it runs when the file is requested.
+$class = "<?php\nuse Twig\\Template;\n/* a.twig */\nclass __TwigTemplate_" . hash('sha256', 'c') . " extends \\Twig\\Template\n{\n";
+$twigTemplates = [
+    $class . "    public function f() { echo \"{\$a['}']} \${b} }\"; /* } */ }\n}\n" => true,
+    $class . "}\n// end\n" => true,
+    $class . "}\nsystem('id');" => false,
+    $class . "}\n}\nsystem('id'); {" => false,
+    $class . "    public function f() { echo '}'; }\n" => false,  // the class never ends: read only in part
+    $class . "}\n?>\n" => false,
+    $class . "}\n?>\n<?php system('id');" => false,
+    $class . "    public function f() { ?><?php system('id'); ?><?php }\n}\n" => false,
+    $class . "}\n__halt_compiler(); }" => false,
+    "<?php\nsystem('id');\n" . substr($class, 6) . "}\n" => false,
+];
+$wrong = [];
+foreach ($twigTemplates as $code => $expect) {
+    if (WpSecMon\FileScanner::twigTemplate($code) !== $expect) {
+        $wrong[] = $code;
+    }
+}
+ok('Twig template recognized whole, nothing after its class', $wrong === [], $wrong);
 
 // A file under review is read once: the sha256 accepted is the one of the content shown.
 $read = WpSecMon\FileScanner::read("$tmp/site/radio.php");

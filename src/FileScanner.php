@@ -13,7 +13,7 @@ namespace WpSecMon;
 final class FileScanner
 {
     private const MAX_UPLOAD_HITS = 2000;
-    /** Largest PHP file in uploads read whole to check that it only returns a value (see inert). */
+    /** Largest PHP file in uploads read whole to check that it only returns a value (see inert) or is a Twig template (see twigTemplate). */
     private const MAX_INERT = 4194304;
     /** Largest wp-config.php taken apart into its constants (see constants). */
     private const MAX_CONFIG = 1048576;
@@ -33,13 +33,11 @@ final class FileScanner
         . 'class\s+__TwigTemplate_[0-9a-f]{32,64}\w*\s+extends\s+[\w\\\\]+\s*\{#';
 
     /**
-     * PHP that plugins generate inside uploads: path relative to uploads => regex the start of the file must match.
+     * Twig template caches inside uploads (path relative to uploads), laid out as <2 hex>/<same 2 hex><rest of the hash>.php
+     * (WPML: cache/wpml/twig, MailPoet: mailpoet/cache). Their files must also be templates (see twigTemplate).
      * Kept narrow on purpose: web shells are often dropped in cache folders, so "cache/*" is not excluded as a whole.
      */
-    private const GENERATED = [
-        // Twig template cache, laid out as <2 hex>/<same 2 hex><rest of the hash>.php (WPML: cache/wpml/twig).
-        '#^cache/[\w-]+/twig/([0-9a-f]{2})/\1[0-9a-f]{30}(?:[0-9a-f]{32})?\.php$#' => self::TWIG_TEMPLATE,
-    ];
+    private const TWIG_CACHE = '#^(?:cache/[\w-]+/twig|mailpoet/cache)/([0-9a-f]{2})/\1[0-9a-f]{30}(?:[0-9a-f]{32})?\.php$#';
 
     private array $out = ['entries' => [], 'truncated' => false, 'errors' => []];
 
@@ -170,7 +168,7 @@ final class FileScanner
         $this->out['entries'][] = $e;
     }
 
-    /** "Silence is golden" stubs, files plugins generate (see GENERATED) and PHP files that cannot run code (see inert). */
+    /** "Silence is golden" stubs, Twig template caches (see TWIG_CACHE) and PHP files that cannot run code (see inert). */
     private static function benign(string $path, string $inUploads, int $size): bool
     {
         if ($size <= 256 && strtolower(basename($path)) === 'index.php') {
@@ -179,8 +177,9 @@ final class FileScanner
                 return true;
             }
         }
-        foreach (self::GENERATED as $where => $head) {
-            if (preg_match($where, $inUploads) && preg_match($head, (string) @file_get_contents($path, false, null, 0, 8192))) {
+        if (preg_match(self::TWIG_CACHE, $inUploads) && $size <= self::MAX_INERT) {
+            $code = (string) @file_get_contents($path, false, null, 0, self::MAX_INERT + 1);
+            if (strlen($code) <= self::MAX_INERT && self::twigTemplate($code)) {
                 return true;
             }
         }
@@ -197,6 +196,42 @@ final class FileScanner
         }
         $code = (string) @file_get_contents($path, false, null, 0, self::MAX_INERT + 1);
         return self::inert($code, strlen($code) <= self::MAX_INERT);
+    }
+
+    /**
+     * A whole compiled Twig template: namespace/use statements and comments, the template's class (see TWIG_TEMPLATE),
+     * and nothing after it. Requested, the file only declares a class: its code runs when Twig renders the template.
+     * Read with PHP's own tokenizer, so that strings and comments cannot hide where the class ends.
+     */
+    public static function twigTemplate(string $code): bool
+    {
+        if (!function_exists('token_get_all') || !preg_match(self::TWIG_TEMPLATE, $code)) {
+            return false;
+        }
+        try {
+            $all = @token_get_all($code);
+        } catch (\Throwable $e) {
+            return false;
+        }
+        // Nothing but use statements and comments comes before the class (TWIG_TEMPLATE): its "{" is the first one.
+        $depth = 0;
+        $closed = false;
+        foreach (array_slice($all, 1) as $tok) {
+            $id = is_array($tok) ? $tok[0] : $tok;
+            if (in_array($id, [T_WHITESPACE, T_COMMENT, T_DOC_COMMENT], true)) {
+                continue;
+            }
+            // Code after the class, or text out of PHP, would run when the file is requested.
+            if ($closed || in_array($id, [T_OPEN_TAG, T_OPEN_TAG_WITH_ECHO, T_CLOSE_TAG, T_INLINE_HTML], true)) {
+                return false;
+            }
+            if ($id === '{' || $id === T_CURLY_OPEN || $id === T_DOLLAR_OPEN_CURLY_BRACES) {
+                $depth++;
+            } elseif ($id === '}') {
+                $closed = --$depth === 0;
+            }
+        }
+        return $closed;
     }
 
     /**
