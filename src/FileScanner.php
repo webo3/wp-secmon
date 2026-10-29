@@ -34,10 +34,10 @@ final class FileScanner
 
     /**
      * Twig template caches inside uploads (path relative to uploads), laid out as <2 hex>/<same 2 hex><rest of the hash>.php
-     * (WPML: cache/wpml/twig, MailPoet: mailpoet/cache). Their files must also be templates (see twigTemplate).
+     * (WPML: cache/wpml/twig, MailPoet: mailpoet/cache and mailpoet-premium/cache). Their files must also be templates (see twigTemplate).
      * Kept narrow on purpose: web shells are often dropped in cache folders, so "cache/*" is not excluded as a whole.
      */
-    private const TWIG_CACHE = '#^(?:cache/[\w-]+/twig|mailpoet/cache)/([0-9a-f]{2})/\1[0-9a-f]{30}(?:[0-9a-f]{32})?\.php$#';
+    private const TWIG_CACHE = '#^(?:cache/[\w-]+/twig|mailpoet(?:-premium)?/cache)/([0-9a-f]{2})/\1[0-9a-f]{30}(?:[0-9a-f]{32})?\.php$#';
 
     private array $out = ['entries' => [], 'truncated' => false, 'errors' => []];
 

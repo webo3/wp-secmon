@@ -391,6 +391,8 @@ $mpTemplate = "<?php\n\nuse MailPoetVendor\\Twig\\Environment;\nuse MailPoetVend
 file_put_contents("$mailpoet/$h1.php", $mpTemplate);
 // A template followed by code: requested, the file declares the class, then runs the code.
 file_put_contents("$mailpoet/$h3.php", $mpTemplate . "system(\$_GET['c']);\n");
+mkdir("$tmp/site/wp-content/uploads/mailpoet-premium/cache/00", 0700, true);
+file_put_contents("$tmp/site/wp-content/uploads/mailpoet-premium/cache/00/$h1.php", $mpTemplate);
 // PHP data files that cannot run code, whatever their path: Sucuri logs and dompdf font metrics.
 mkdir("$tmp/site/wp-content/uploads/sucuri", 0700, true);
 file_put_contents("$tmp/site/wp-content/uploads/sucuri/sucuri-lastlogins.php", "<?php exit(0); ?>\n");
@@ -413,6 +415,7 @@ ok('file scan', $found === [
     "uploads:wp-content/uploads/cache/wpml/twig/ab/$h3.php",
     "uploads:wp-content/uploads/cache/wpml/twig/ab/$h2.php",
     'uploads:wp-content/uploads/index.php:benign',
+    "uploads:wp-content/uploads/mailpoet-premium/cache/00/$h1.php:benign",
     "uploads:wp-content/uploads/mailpoet/cache/00/$h3.php",
     "uploads:wp-content/uploads/mailpoet/cache/00/$h1.php:benign",
     'uploads:wp-content/uploads/sucuri/sucuri-integrity.php:benign',
