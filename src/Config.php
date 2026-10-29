@@ -73,6 +73,7 @@ final class Config
 
         // integrity check
         'risky_default_roles' => ['administrator', 'editor', 'author', 'shop_manager'],
+        'wp_config_ignore_constants' => ['WP_TOOLKIT_API_TOKEN'],
 
         // checksums check
         'core_checksum_ignore' => ['*/error_log'],

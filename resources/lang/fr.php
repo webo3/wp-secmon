@@ -257,6 +257,13 @@ return [
     '%d added' => ['%d fichier ajouté', '%d fichiers ajoutés'],
     '%d modified' => ['%d fichier modifié', '%d fichiers modifiés'],
     '%d removed' => ['%d fichier supprimé', '%d fichiers supprimés'],
+    '%s (%s)' => '%s (%s)',
+    'constants changed: %s' => 'constantes modifiées : %s',
+    'constants added: %s' => 'constantes ajoutées : %s',
+    'constants removed: %s' => 'constantes supprimées : %s',
+    'other lines changed' => 'autres lignes modifiées',
+    'constants moved or rewritten' => 'constantes déplacées ou réécrites',
+    'only comments or blank space changed' => 'seuls des commentaires ou des espaces ont changé',
 
     // checksums
     'wp core verify-checksums failed: %s' => 'échec de wp core verify-checksums : %s',

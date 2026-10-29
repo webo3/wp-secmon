@@ -252,6 +252,53 @@ ok('files diff', titles(IntegrityCheck::diffFiles($f1, $f2)) === [
     'critical: Must-use plugins (loaded on every request, cannot be disabled): 1 added',
 ], titles(IntegrityCheck::diffFiles($f1, $f2)));
 
+// wp-config.php: the constants that changed, never their values; the value of ignored ones may change unreported.
+$config = "<?php\n/** Database */\ndefine( 'DB_PASSWORD', 'secret' );\ndefine('WP_TOOLKIT_API_TOKEN', 'eyJ.one.sig');\n"
+    . "\$table_prefix = 'wp_';\nif ( ! defined( 'ABSPATH' ) ) {\n\tdefine( 'ABSPATH', __DIR__ . '/' );\n}\nrequire_once ABSPATH . 'wp-settings.php';\n";
+$before = WpSecMon\FileScanner::constants($config);
+ok('wp-config constants, without their values', array_keys($before['values']) === ['DB_PASSWORD', 'WP_TOOLKIT_API_TOKEN']
+    && strpos((string) json_encode($before), 'secret') === false, $before);
+$renewed = str_replace('eyJ.one.sig', 'eyJ.two.sig', $config);
+$ignore = Config::fromArray([])->list('wp_config_ignore_constants');
+$changes = static function (string $after, array $ignore = []) use ($before): ?array {
+    return IntegrityCheck::constantChanges($before, WpSecMon\FileScanner::constants($after), $ignore);
+};
+$cases = [
+    'token renewed' => [$changes($renewed, $ignore), []],
+    'token renewed, comments and blank space changed' => [$changes(str_replace(["/** Database */\n", "( 'DB"], ['', "('DB"], $renewed), $ignore), []],
+    'token renewed, code added' => [$changes($renewed . "eval(\$_POST[1]);\n", $ignore), ['constants changed: WP_TOOLKIT_API_TOKEN', 'other lines changed']],
+    'token renewed and moved' => [$changes(str_replace("define('WP_TOOLKIT_API_TOKEN', 'eyJ.two.sig');\n", '', $renewed)
+        . "define('WP_TOOLKIT_API_TOKEN', 'eyJ.two.sig');\n", $ignore), ['constants changed: WP_TOOLKIT_API_TOKEN', 'constants moved or rewritten']],
+    'token renewed, not ignored' => [$changes($renewed), ['constants changed: WP_TOOLKIT_API_TOKEN']],
+    'other constant changed' => [$changes(str_replace("'secret'", "'other'", $renewed), $ignore), ['constants changed: DB_PASSWORD, WP_TOOLKIT_API_TOKEN']],
+    'constant added' => [$changes($config . "define( 'WP_DEBUG', true );\n", $ignore), ['constants added: WP_DEBUG']],
+    'constant removed' => [$changes(str_replace("define('WP_TOOLKIT_API_TOKEN', 'eyJ.one.sig');\n", '', $config), $ignore),
+        ['constants removed: WP_TOOLKIT_API_TOKEN']],
+    'comment changed' => [$changes(str_replace('Database', 'DB', $config), $ignore), ['only comments or blank space changed']],
+    // Only define('NAME', <one literal>) as a statement is taken apart.
+    'value no longer a literal' => [$changes(str_replace("'eyJ.one.sig'", "'eyJ.' . \$_GET[1]", $config), $ignore),
+        ['constants removed: WP_TOOLKIT_API_TOKEN', 'other lines changed']],
+    'not the define() function' => [$changes(str_replace("define('WP_TOOLKIT", "\$x->define('WP_TOOLKIT", $config), $ignore),
+        ['constants removed: WP_TOOLKIT_API_TOKEN', 'other lines changed']],
+    'unknown before' => [IntegrityCheck::constantChanges(null, $before, $ignore), null],
+];
+foreach ($cases as $name => [$got, $expect]) {
+    ok("wp-config changes: $name", $got === $expect, $got);
+}
+// A namespace or a "use" could make define() call a function of the file.
+ok('wp-config with a namespace not taken apart', WpSecMon\FileScanner::constants("<?php namespace A; function define(\$n, \$v) { eval(\$v); }\n"
+    . "define('WP_TOOLKIT_API_TOKEN', 'x');") === null && WpSecMon\FileScanner::constants("<?php use function A\\b as define;") === null);
+
+$m1 = ['wp-config.php' => ['config', hash('sha256', $config), $before]];
+$m2 = ['wp-config.php' => ['config', hash('sha256', $renewed), WpSecMon\FileScanner::constants($renewed)]];
+$m3 = ['wp-config.php' => ['config', 'h']];
+ok('wp-config token renewed: not reported', IntegrityCheck::diffFiles($m1, $m2, $ignore) === []);
+$d = IntegrityCheck::diffFiles($m1, $m2);
+ok('wp-config change detailed', titles($d) === ['warning: wp-config.php: 1 modified']
+    && $d[0][2] === ['    modified: wp-config.php (constants changed: WP_TOOLKIT_API_TOKEN)'], $d);
+$d = IntegrityCheck::diffFiles($m3, $m2, $ignore);
+ok('wp-config baseline without constants', titles($d) === ['warning: wp-config.php: 1 modified'] && $d[0][2] === ['    modified: wp-config.php'], $d);
+
 $found = ['wp-content/uploads/a.php' => ['hash' => 'h1'], 'wp-content/uploads/b.php' => ['hash' => 'h2'], 'wp-content/uploads/c.php' => ['hash' => 'h3']];
 $accepted = ['wp-content/uploads/a.php' => ['hash' => 'h1'], 'wp-content/uploads/b.php' => ['hash' => 'before'], 'wp-content/uploads/gone.php' => ['hash' => 'h4']];
 ok('accepted uploads: reported again once changed', IntegrityCheck::pendingUploads($found, $accepted)
@@ -360,6 +407,13 @@ ok('file scan', $found === [
     'uploads:wp-content/uploads/sucuri/sucuri-lastlogins.php:benign',
     'uploads:wp-content/uploads/sucuri/sucuri-shell.php',
 ], $found);
+$withConstants = [];
+foreach ($scan['entries'] as $e) {
+    if (isset($e['constants'])) {
+        $withConstants[] = basename($e['path']) . ':' . ($e['sha256'] === hash_file('sha256', $e['path']) ? 'hash' : 'wrong hash');
+    }
+}
+ok('file scan takes wp-config.php apart', $withConstants === ['wp-config.php:hash'], $withConstants);
 
 // What runs first decides: an exit before anything else, or a returned literal and nothing more.
 $inert = [

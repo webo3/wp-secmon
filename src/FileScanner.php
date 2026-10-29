@@ -15,6 +15,8 @@ final class FileScanner
     private const MAX_UPLOAD_HITS = 2000;
     /** Largest PHP file in uploads read whole to check that it only returns a value (see inert). */
     private const MAX_INERT = 4194304;
+    /** Largest wp-config.php taken apart into its constants (see constants). */
+    private const MAX_CONFIG = 1048576;
     private const PHP_LIKE = '/\.(php\d?|phtml|pht|phar|phps|inc)$/i';
     private const UPLOAD_EXEC = '/\.(php\d?|phtml|pht|phar|phps|shtml|cgi|pl|py|sh)$|\.(php\d?|phtml|pht|phar)\./i';
     private const SERVER_CONFIG = ['.htaccess', '.user.ini', 'php.ini'];
@@ -148,6 +150,16 @@ final class FileScanner
         $e = ['area' => $area, 'path' => $path, 'size' => $st['size'], 'sha256' => null, 'link' => null, 'benign' => false];
         if (is_link($path)) {
             $e['link'] = (string) @readlink($path);
+        } elseif ($area === 'config' || ($area === 'root' && basename($path) === 'wp-config.php')) {
+            // Read once, so that the constants are those of the content hashed.
+            $code = $st['size'] <= self::MAX_CONFIG ? @file_get_contents($path, false, null, 0, self::MAX_CONFIG + 1) : false;
+            if ($code !== false && strlen($code) <= self::MAX_CONFIG) {
+                $e['sha256'] = hash('sha256', $code);
+                $e['constants'] = self::constants($code);
+            } else {
+                $hash = @hash_file('sha256', $path);
+                $e['sha256'] = $hash === false ? 'unreadable' : $hash;
+            }
         } else {
             $hash = @hash_file('sha256', $path);
             $e['sha256'] = $hash === false ? 'unreadable' : $hash;
@@ -270,6 +282,79 @@ final class FileScanner
             }
         }
         return false;
+    }
+
+    /**
+     * Fingerprint of a wp-config.php that tells which constants changed, without their values:
+     * - code: the file with the value of each plain define() blanked;
+     * - other: the file without its plain define() statements;
+     * - values: name => sha256 of its value, in the order of the file.
+     * A plain define() is a statement define('NAME', <one literal>). code and other are hashed
+     * from the tokens, without blank space and comments, which cannot run anything. Null when
+     * the file cannot be taken apart: without the tokenizer, or with a namespace or a "use",
+     * which could make define() call a function of the file.
+     * @return array{code: string, other: string, values: array<string, string>}|null
+     */
+    public static function constants(string $code): ?array
+    {
+        if (!function_exists('token_get_all')) {
+            return null;
+        }
+        try {
+            $all = @token_get_all($code);
+        } catch (\Throwable $e) {
+            return null;
+        }
+        $t = [];
+        foreach ($all as $tok) {
+            if (!is_array($tok)) {
+                $t[] = [$tok, $tok];
+            } elseif (in_array($tok[0], [T_NAMESPACE, T_USE], true)) {
+                return null;
+            } elseif (in_array($tok[0], [T_OPEN_TAG, T_CLOSE_TAG], true)) {
+                $t[] = [$tok[0], trim($tok[1])];
+            } elseif (!in_array($tok[0], [T_WHITESPACE, T_COMMENT, T_DOC_COMMENT], true)) {
+                $t[] = [$tok[0], $tok[1]];
+            }
+        }
+        $literal = static function (array $tok): bool {
+            return in_array($tok[0], [T_CONSTANT_ENCAPSED_STRING, T_LNUMBER, T_DNUMBER], true)
+                || ($tok[0] === T_STRING && in_array(strtolower($tok[1]), ['true', 'false', 'null'], true));
+        };
+        $blank = $drop = $values = [];
+        foreach ($t as $i => [$id, $text]) {
+            // define ( 'NAME' , <literal> ) ; as a statement of its own: not a method, a declaration...
+            if ($id !== T_STRING || strtolower($text) !== 'define'
+                || !in_array($i > 0 ? $t[$i - 1][0] : T_OPEN_TAG, [';', '{', '}', ')', ':', T_OPEN_TAG, T_ELSE], true)
+                || ($t[$i + 1][0] ?? null) !== '(' || ($t[$i + 2][0] ?? null) !== T_CONSTANT_ENCAPSED_STRING
+                || ($t[$i + 3][0] ?? null) !== ',' || !isset($t[$i + 4]) || !$literal($t[$i + 4])
+                || ($t[$i + 5][0] ?? null) !== ')' || !in_array($t[$i + 6][0] ?? null, [';', T_CLOSE_TAG], true)) {
+                continue;
+            }
+            $name = substr($t[$i + 2][1], 1, -1);
+            if (!preg_match('/^[A-Za-z_][A-Za-z0-9_]*$/D', $name)) {
+                continue;
+            }
+            $values[$name][] = $t[$i + 4][1];
+            $blank[$i + 4] = true;
+            // A closing tag ends the statement but stays: it leaves PHP.
+            for ($j = $i, $end = $t[$i + 6][0] === ';' ? $i + 6 : $i + 5; $j <= $end; $j++) {
+                $drop[$j] = true;
+            }
+        }
+        $blanked = $other = [];
+        foreach ($t as $i => [, $text]) {
+            $blanked[] = isset($blank[$i]) ? "''" : $text;
+            if (!isset($drop[$i])) {
+                $other[] = $text;
+            }
+        }
+        // serialize(): tokens may hold any byte, so no separator would be unambiguous.
+        $hashes = [];
+        foreach ($values as $name => $list) {
+            $hashes[$name] = hash('sha256', serialize($list));
+        }
+        return ['code' => hash('sha256', serialize($blanked)), 'other' => hash('sha256', serialize($other)), 'values' => $hashes];
     }
 
     /** Files directly in $dir that are PHP-like or server configuration. */

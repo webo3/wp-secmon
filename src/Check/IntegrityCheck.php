@@ -15,7 +15,9 @@ use WpSecMon\Util;
  * - security-relevant options (site URL, admin e-mail, open registration...)
  * - plugins and themes installed, removed, activated or deactivated
  * - wp-config.php, .htaccess/.user.ini/php.ini, non-core PHP files in the site
- *   root and in wp-content, drop-ins and must-use plugins (sha256 baseline)
+ *   root and in wp-content, drop-ins and must-use plugins (sha256 baseline);
+ *   for wp-config.php, which constants changed, and value changes of
+ *   wp_config_ignore_constants are not reported (see constantChanges)
  * - executable files (PHP...) in the uploads directory, except those accepted
  *   with `wp-secmon review` and unchanged since (see Review)
  */
@@ -262,7 +264,7 @@ final class IntegrityCheck extends Check
         if ($old === null) {
             Log::info(I18n::t('%s: file baseline recorded (%d files)', $site->root, count($manifest)));
         } else {
-            foreach (self::diffFiles($old, $manifest) as [$sev, $title, $lines, $meta]) {
+            foreach (self::diffFiles($old, $manifest, $this->ctx->cfg->list('wp_config_ignore_constants')) as [$sev, $title, $lines, $meta]) {
                 $alerts->event($sev, $title, $lines, $meta);
             }
         }
@@ -315,8 +317,8 @@ final class IntegrityCheck extends Check
     }
 
     /**
-     * @return array{0: array<string, array{0: string, 1: string}>, 1: array<string, array{path: string, hash: string, size: int}>}
-     *         [manifest rel => [category, hash], executables in uploads rel => file]
+     * @return array{0: array<string, array{0: string, 1: string, 2?: array}>, 1: array<string, array{path: string, hash: string, size: int}>}
+     *         [manifest rel => [category, hash, wp-config.php constants (see constantsOf)], executables in uploads rel => file]
      */
     private function classify(Site $site, array $entries): array
     {
@@ -358,11 +360,31 @@ final class IntegrityCheck extends Check
                 default:
                     continue 2;
             }
-            $manifest[$rel] = [$cat, $hash];
+            $constants = $cat === 'config' ? self::constantsOf($e) : null;
+            $manifest[$rel] = $constants !== null ? [$cat, $hash, $constants] : [$cat, $hash];
         }
         ksort($manifest);
         ksort($exec);
         return [$manifest, $exec];
+    }
+
+    /**
+     * The constants of a scanned wp-config.php (FileScanner::constants), or null.
+     * Their names end up in the reports: anything but a plain name voids them all.
+     * @return array{code: string, other: string, values: array<string, string>}|null
+     */
+    private static function constantsOf(array $e): ?array
+    {
+        $c = $e['constants'] ?? null;
+        if (!is_array($c) || !is_string($c['code'] ?? null) || !is_string($c['other'] ?? null) || !is_array($c['values'] ?? null)) {
+            return null;
+        }
+        foreach ($c['values'] as $name => $hash) {
+            if (!is_string($hash) || !preg_match('/^[A-Za-z_][A-Za-z0-9_]*$/D', (string) $name)) {
+                return null;
+            }
+        }
+        return ['code' => $c['code'], 'other' => $c['other'], 'values' => $c['values']];
     }
 
     /** What a file is compared by: its sha256, or the target of a symbolic link (FileScanner entry or read). */
@@ -390,19 +412,26 @@ final class IntegrityCheck extends Check
         return $out;
     }
 
-    public static function diffFiles(array $old, array $new): array
+    /**
+     * @param array $old manifest of the last check, $new of this one (see classify)
+     * @param string[] $ignoreConstants wp-config.php constants whose value may change unreported (wp_config_ignore_constants)
+     */
+    public static function diffFiles(array $old, array $new, array $ignoreConstants = []): array
     {
         $changes = [];
         foreach ($new as $rel => [$cat, $hash]) {
             if (!isset($old[$rel])) {
-                $changes[$cat][] = ['added', $rel];
+                $changes[$cat][] = ['added', $rel, null];
             } elseif ($old[$rel][1] !== $hash) {
-                $changes[$cat][] = ['modified', $rel];
+                $detail = self::constantChanges($old[$rel][2] ?? null, $new[$rel][2] ?? null, $ignoreConstants);
+                if ($detail !== []) {
+                    $changes[$cat][] = ['modified', $rel, $detail];
+                }
             }
         }
         foreach ($old as $rel => [$cat]) {
             if (!isset($new[$rel])) {
-                $changes[$cat][] = ['removed', $rel];
+                $changes[$cat][] = ['removed', $rel, null];
             }
         }
         $rank = ['info' => 1, 'warning' => 2, 'critical' => 3];
@@ -414,7 +443,7 @@ final class IntegrityCheck extends Check
             $sev = 'info';
             $counts = ['added' => 0, 'modified' => 0, 'removed' => 0];
             $lines = [];
-            foreach ($changes[$cat] as [$what, $rel]) {
+            foreach ($changes[$cat] as [$what, $rel, $detail]) {
                 $counts[$what]++;
                 $s = $what === 'added' ? $onAdd : ($what === 'modified' ? $onMod : $onDel);
                 if ($s === 'critical' && $what === 'added' && !preg_match('/\.(php\d?|phtml|pht|phar|inc)$/i', $rel)) {
@@ -423,7 +452,8 @@ final class IntegrityCheck extends Check
                 if ($rank[$s] > $rank[$sev]) {
                     $sev = $s;
                 }
-                $lines[] = self::change($what, 0, $rel);
+                $line = self::change($what, 0, $rel);
+                $lines[] = $detail ? I18n::t('%s (%s)', $line, implode('; ', $detail)) : $line;
             }
             $summary = [];
             foreach (array_filter($counts) as $what => $n) {
@@ -431,6 +461,43 @@ final class IntegrityCheck extends Check
             }
             $out[] = [$sev, I18n::t('%s: %s', self::label($cat), implode(', ', $summary)), Util::listBlock('', $lines, 40),
                 ['kind' => 'files', 'category' => $cat]];
+        }
+        return $out;
+    }
+
+    /**
+     * What changed in a wp-config.php, from its constants before and after (see constantsOf):
+     * null when unknown, [] when nothing but the value of constants in $ignore changed.
+     * @return string[]|null
+     */
+    public static function constantChanges(?array $old, ?array $new, array $ignore): ?array
+    {
+        if ($old === null || $new === null) {
+            return null;
+        }
+        $added = array_keys(array_diff_key($new['values'], $old['values']));
+        $removed = array_keys(array_diff_key($old['values'], $new['values']));
+        $changed = array_keys(array_diff_assoc(array_intersect_key($new['values'], $old['values']), $old['values']));
+        if ($old['code'] === $new['code'] && !$added && !$removed && $changed && !array_diff($changed, $ignore)) {
+            return [];
+        }
+        $out = [];
+        if ($changed) {
+            $out[] = I18n::t('constants changed: %s', implode(', ', $changed));
+        }
+        if ($added) {
+            $out[] = I18n::t('constants added: %s', implode(', ', $added));
+        }
+        if ($removed) {
+            $out[] = I18n::t('constants removed: %s', implode(', ', $removed));
+        }
+        if ($old['other'] !== $new['other']) {
+            $out[] = I18n::t('other lines changed');
+        } elseif ($old['code'] !== $new['code'] && !$added && !$removed) {
+            // The same constants, but not where or as they were.
+            $out[] = I18n::t('constants moved or rewritten');
+        } elseif (!$out) {
+            $out[] = I18n::t('only comments or blank space changed');
         }
         return $out;
     }
