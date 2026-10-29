@@ -541,6 +541,10 @@ Options :
         => ['%d autre fichier à examiner a le même contenu : accepter celui-ci l’accepte aussi',
             '%d autres fichiers à examiner ont le même contenu : accepter celui-ci les accepte aussi'],
     'no longer accepted: it will be reported again' => 'n’est plus accepté : il sera de nouveau signalé',
+    'no longer accepted: it will be reported again, with %d other file with the same content'
+        => ['n’est plus accepté : il sera de nouveau signalé, avec %d autre fichier au même contenu',
+            'n’est plus accepté : il sera de nouveau signalé, avec %d autres fichiers au même contenu'],
+    'accepted on %s: same content as %s' => 'accepté le %s : même contenu que %s',
     'cannot read it: %s' => 'lecture impossible : %s',
     'no longer there' => 'n’existe plus',
     'it changed while being read: review it again' => 'modifié pendant la lecture : examinez-le de nouveau',

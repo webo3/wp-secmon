@@ -303,6 +303,17 @@ $found = ['wp-content/uploads/a.php' => ['hash' => 'h1'], 'wp-content/uploads/b.
 $accepted = ['wp-content/uploads/a.php' => ['hash' => 'h1'], 'wp-content/uploads/b.php' => ['hash' => 'before'], 'wp-content/uploads/gone.php' => ['hash' => 'h4']];
 ok('accepted uploads: reported again once changed', IntegrityCheck::pendingUploads($found, $accepted)
     === ['wp-content/uploads/b.php' => true, 'wp-content/uploads/c.php' => false], IntegrityCheck::pendingUploads($found, $accepted));
+$found = [
+    'u/a.php' => ['hash' => 'h1'],
+    'u/new/a.php' => ['hash' => 'h1'],  // new, with an accepted content
+    'u/b.php' => ['hash' => 'h4'],      // changed to the content of a file accepted, gone since
+    'u/c.php' => ['hash' => 'h5'],      // changed to a content not accepted
+    'u/link.php' => ['hash' => 'symlink -> ../x.php'],
+];
+$accepted = ['u/a.php' => ['hash' => 'h1'], 'u/b.php' => ['hash' => 'before'], 'u/c.php' => ['hash' => 'before'], 'u/gone.php' => ['hash' => 'h4'],
+    'u/other/link.php' => ['hash' => 'symlink -> ../x.php']];
+ok('accepted uploads: a content accepted for every file of the site, a symbolic link only at its own path',
+    IntegrityCheck::pendingUploads($found, $accepted) === ['u/c.php' => true, 'u/link.php' => false], IntegrityCheck::pendingUploads($found, $accepted));
 
 // ---------------------------------------------------------------- checksums
 $core = ChecksumsCheck::parseCore(<<<'TXT'

@@ -395,18 +395,38 @@ final class IntegrityCheck extends Check
     }
 
     /**
-     * Executable files in uploads to report: not accepted with `wp-secmon review`, or changed since.
+     * Executable files in uploads to report: not accepted with `wp-secmon review`, or changed since,
+     * unless their content is accepted for another file (see acceptedContent).
      * @param array<string, array{hash: string}> $found rel => file (see classify)
      * @param array<string, array{hash: string}> $accepted rel => acceptance (see Review)
      * @return array<string, bool> rel => whether it changed since it was accepted
      */
     public static function pendingUploads(array $found, array $accepted): array
     {
+        $content = self::acceptedContent($accepted);
         $out = [];
         foreach ($found as $rel => $f) {
             $was = $accepted[$rel]['hash'] ?? null;
-            if ($was !== $f['hash']) {
+            if ($was !== $f['hash'] && !isset($content[$f['hash']])) {
                 $out[$rel] = $was !== null;
+            }
+        }
+        return $out;
+    }
+
+    /**
+     * Content accepted for a file is accepted for every file of the site that has it. Not a symbolic link's
+     * target: a relative one points elsewhere from another folder, so a link is only accepted at its own path.
+     * @param array<string, array{hash: string}> $accepted rel => acceptance (see Review)
+     * @return array<string, true> hash => true
+     */
+    public static function acceptedContent(array $accepted): array
+    {
+        $out = [];
+        foreach ($accepted as $a) {
+            $hash = (string) ($a['hash'] ?? '');
+            if ($hash !== '' && strpos($hash, 'symlink -> ') !== 0) {
+                $out[$hash] = true;
             }
         }
         return $out;

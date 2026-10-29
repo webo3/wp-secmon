@@ -526,6 +526,17 @@ expect('files with the same content accepted together, on every site', has($out,
     && has($out, '3 files accepted, 0 no longer accepted')
     && ($list['wp-content/uploads/sucuri/thumb.php']['hash'] ?? null) === hash_file('sha256', $thumbs[0])
     && ($bobList['wp-content/uploads/thumb.php']['hash'] ?? null) === hash_file('sha256', $thumbs[0]), $out);
+// A new file with an accepted content is not reported; "n" on it withdraws that content from every file of the site.
+$thumbs[] = ALICE . '/wp-content/uploads/2026/09/thumb-2.php';
+put($thumbs[3], "<?php echo 'thumbnail';\n", 'alice');
+[, , , $details] = wpsecmon('integrity', '--no-mail', '--site', ALICE);
+expect('a new file with an accepted content not reported', has($details, '3 executable file(s) in the uploads directory')
+    && !has($details, 'thumb'), $details);
+// photo.php.jpg: skip. secret.php: no question. thumb-2.php: no. thumb.php, sucuri-cmd.php, sucuri/thumb.php: skip.
+[, $out] = wpsecmonWithInput("\nn\n\n\n\n", 'review', '--accepted', '--site', ALICE);
+expect('content withdrawn from every file of the site', has($out, ': same content as wp-content/uploads/2026/09/thumb.php')
+    && has($out, 'no longer accepted: it will be reported again, with 2 other files with the same content')
+    && array_keys(json_decode((string) file_get_contents($accepted), true)) === ['wp-content/uploads/2026/09/photo.php.jpg'], $out);
 array_map('unlink', $thumbs);
 wpsecmon('integrity', '--no-mail', '--site', ALICE, '--site', BOB);
 // photo.php.jpg: no longer accepted. sucuri-cmd.php: skip.

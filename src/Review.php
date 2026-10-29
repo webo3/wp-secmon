@@ -9,7 +9,9 @@ use WpSecMon\Check\IntegrityCheck;
 /**
  * wp-secmon review: goes through the executable files the last integrity check
  * found in uploads, and records the ones the admin accepts with their sha256.
- * The integrity check stops reporting an accepted file until its content changes.
+ * The integrity check stops reporting the files of the site that have an accepted
+ * content (see IntegrityCheck::acceptedContent): a file is reported again once it
+ * changes, unless its new content is accepted too.
  *
  * Files are read as the site owner (FileScanner::read), never as root, and the
  * sha256 accepted is the one of the content shown.
@@ -26,7 +28,10 @@ final class Review
     private $in;
     private int $accepted = 0;
     private int $withdrawn = 0;
-    /** @var array<string, string> content accepted once it was shown, on any site: hash => path. The files with the same content are accepted with it. */
+    /**
+     * @var array<string, string> content accepted once it was shown, on any site: hash => path. The files with the
+     * same content are accepted with it; not symbolic links (see IntegrityCheck::acceptedContent).
+     */
     private array $same = [];
     /** @var array<string, int> files still to go through, by hash at the last check */
     private array $left = [];
@@ -94,7 +99,7 @@ final class Review
                 continue;
             }
             if ($folder === dirname($rel)) {
-                $this->decide($site, $rel, $file);
+                $accepted = $this->decide($site, $rel, $file, true);
                 self::say('  ' . I18n::t('accepted with the rest of its folder'));
                 continue;
             }
@@ -103,14 +108,14 @@ final class Review
                 // Relative to this site when it is one of its files, in full when it is another site's.
                 $from = $this->same[$hash];
                 $from = strpos($from, $site->root . '/') === 0 ? substr($from, strlen($site->root) + 1) : $from;
-                $this->decide($site, $rel, $file);
+                $accepted = $this->decide($site, $rel, $file, true);
                 self::say('  ' . I18n::t('accepted: same content as %s', Util::oneLine($from)));
                 continue;
             }
-            $was = $accepted[$rel] ?? null;
+            $was = self::acceptance($accepted, $rel, $hash);
             $this->about($file, $was);
             $this->content($file, false);
-            $others = $this->left[$hash] ?? 0;
+            $others = $file['link'] === null ? ($this->left[$hash] ?? 0) : 0;
             if ($others > 0) {
                 self::say('  ' . I18n::n($others, '%d other file to review has the same content: accepting this one accepts it too',
                     '%d other files to review have the same content: accepting this one accepts them too', $others));
@@ -125,14 +130,26 @@ final class Review
                     continue;
                 }
                 if (in_array($answer, ['y', 'o', 'a'], true)) {
-                    $this->decide($site, $rel, $file);
+                    $accepted = $this->decide($site, $rel, $file, true);
                     self::say('  ' . I18n::t('accepted'));
                     $folder = $answer === 'a' ? dirname($rel) : $folder;
                     // $file is what was shown last ("c" reads it again).
-                    $this->same[IntegrityCheck::fileHash($file)] = $path;
+                    if ($file['link'] === null) {
+                        $this->same[IntegrityCheck::fileHash($file)] = $path;
+                    }
                 } elseif ($answer === 'n' && $was !== null) {
-                    $this->decide($site, $rel, null);
-                    self::say('  ' . I18n::t('no longer accepted: it will be reported again'));
+                    // Its content is no longer accepted for the other files of the site either.
+                    $hash = IntegrityCheck::fileHash($file);
+                    $others = 0;
+                    if (isset(IntegrityCheck::acceptedContent($accepted)[$hash])) {
+                        foreach ($found as $r => $f) {
+                            $others += (string) $r !== $rel && ($f['hash'] ?? null) === $hash ? 1 : 0;
+                        }
+                    }
+                    $accepted = $this->decide($site, $rel, $file, false);
+                    self::say('  ' . ($others > 0 ? I18n::n($others, 'no longer accepted: it will be reported again, with %d other file with the same content',
+                        'no longer accepted: it will be reported again, with %d other files with the same content', $others)
+                        : I18n::t('no longer accepted: it will be reported again')));
                 } elseif ($answer !== '' && $answer !== 'n') {
                     continue;
                 }
@@ -181,17 +198,39 @@ final class Review
         return $whole;
     }
 
-    /** Size, sha256, date, and when it was accepted. */
+    /** Size, sha256, date, and when it was accepted (see acceptance). */
     private function about(array $file, ?array $was): void
     {
         $about = $file['link'] !== null ? I18n::t('symbolic link to %s', Util::oneLine((string) $file['link']))
             : I18n::n((int) $file['size'], '%d byte', '%d bytes', (int) $file['size']) . ', sha256 ' . Util::oneLine((string) $file['sha256']);
         self::say('  ' . I18n::t('%s, modified %s', $about, date('Y-m-d H:i', (int) $file['mtime'])));
-        if ($was !== null) {
-            $on = date('Y-m-d H:i', (int) ($was['accepted'] ?? 0));
-            self::say('  ' . (($was['hash'] ?? '') === IntegrityCheck::fileHash($file)
-                ? I18n::t('accepted on %s', $on) : I18n::t('accepted on %s, changed since', $on)));
+        if ($was === null) {
+            return;
         }
+        $on = date('Y-m-d H:i', (int) ($was['accepted'] ?? 0));
+        $unchanged = ($was['hash'] ?? '') === IntegrityCheck::fileHash($file);
+        if (!isset($was['same'])) {
+            self::say('  ' . ($unchanged ? I18n::t('accepted on %s', $on) : I18n::t('accepted on %s, changed since', $on)));
+        } elseif ($unchanged) {
+            self::say('  ' . I18n::t('accepted on %s: same content as %s', $on, Util::oneLine((string) $was['same'])));
+        }
+    }
+
+    /**
+     * What a file's acceptance is (see IntegrityCheck::pendingUploads): its own, that of another file with
+     * the same content ('same' => that file), or its own for a content it no longer has. Null when none.
+     */
+    private static function acceptance(array $accepted, string $rel, string $hash): ?array
+    {
+        $own = $accepted[$rel] ?? null;
+        if (($own['hash'] ?? null) !== $hash && isset(IntegrityCheck::acceptedContent($accepted)[$hash])) {
+            foreach ($accepted as $r => $a) {
+                if (($a['hash'] ?? null) === $hash) {
+                    return $a + ['same' => (string) $r];
+                }
+            }
+        }
+        return $own;
     }
 
     /** The first lines of the file, or all that was read ($whole). */
@@ -236,25 +275,41 @@ final class Review
         }, $lines ?: []);
     }
 
-    /** Records the decision on $rel at once, so that quitting keeps it: accepted as $file, or not accepted (null). */
-    private function decide(Site $site, string $rel, ?array $file): void
+    /**
+     * Records the decision on $rel at once, so that quitting keeps it: accepted as $file, or no longer accepted,
+     * its content with it (see IntegrityCheck::acceptedContent).
+     * @return array the acceptances of the site now
+     */
+    private function decide(Site $site, string $rel, array $file, bool $accept): array
     {
         $dir = $this->dir($site);
         $accepted = Util::readJson("$dir/" . IntegrityCheck::UPLOADS_ACCEPTED) ?? [];
-        if ($file === null) {
-            unset($accepted[$rel]);
-            $this->withdrawn++;
-        } else {
-            $accepted[$rel] = ['hash' => IntegrityCheck::fileHash($file), 'size' => (int) $file['size'], 'accepted' => time()];
+        $hash = IntegrityCheck::fileHash($file);
+        if ($accept) {
+            $accepted[$rel] = ['hash' => $hash, 'size' => (int) $file['size'], 'accepted' => time()];
             $this->accepted++;
+        } else {
+            foreach ($accepted as $r => $a) {
+                if ((string) $r === $rel || ($file['link'] === null && ($a['hash'] ?? null) === $hash)) {
+                    unset($accepted[$r]);
+                }
+            }
+            $this->withdrawn++;
         }
-        // Files gone at the last check are forgotten, unless that scan stopped early.
+        // Files gone at the last check are forgotten, unless that scan stopped early or another file still has their content.
         $found = Util::readJson("$dir/" . IntegrityCheck::UPLOADS_FOUND);
         if ($found !== null && empty($found['truncated'])) {
-            $accepted = array_intersect_key($accepted, $found['files'] ?? []);
+            $files = $found['files'] ?? [];
+            $kept = array_intersect_key(IntegrityCheck::acceptedContent($accepted), array_flip(array_column($files, 'hash')));
+            foreach ($accepted as $r => $a) {
+                if (!isset($files[$r]) && !isset($kept[$a['hash'] ?? ''])) {
+                    unset($accepted[$r]);
+                }
+            }
         }
         ksort($accepted);
         Util::writeJson("$dir/" . IntegrityCheck::UPLOADS_ACCEPTED, $accepted);
+        return $accepted;
     }
 
     private function dir(Site $site): string
