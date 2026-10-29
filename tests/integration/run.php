@@ -506,6 +506,24 @@ put($photo, "<?php system(\$_GET['c']);\n", 'alice');
 [, , , $details] = wpsecmon('integrity', '--no-mail', '--site', ALICE);
 expect('accepted file reported again once changed', has($details, '3 executable file(s) in the uploads directory')
     && (bool) preg_match('#photo\.php\.jpg \(\d+ bytes\), changed since it was accepted#', $details), $details);
+// The same content in two folders and on another site: accepting the first one accepts the others.
+$thumbs = [ALICE . '/wp-content/uploads/2026/09/thumb.php', ALICE . '/wp-content/uploads/sucuri/thumb.php', BOB . '/wp-content/uploads/thumb.php'];
+sh(['runuser', '-u', 'bob', '--', 'mkdir', '-p', BOB . '/wp-content/uploads']);
+foreach ($thumbs as $thumb) {
+    put($thumb, "<?php echo 'thumbnail';\n", strpos($thumb, BOB) === 0 ? 'bob' : 'alice');
+}
+wpsecmon('integrity', '--no-mail', '--site', ALICE, '--site', BOB);
+// photo.php.jpg: skip. secret.php: no question. 2026/09/thumb.php: yes. sucuri-cmd.php: skip. The other thumb.php: no question.
+[, $out] = wpsecmonWithInput("\ny\n\n", 'review', '--site', ALICE, '--site', BOB);
+$list = json_decode((string) @file_get_contents($accepted), true) ?? [];
+$bobList = json_decode((string) @file_get_contents('/var/lib/wp-secmon/sites/' . substr(hash('sha256', BOB), 0, 12) . '/uploads-accepted.json'), true) ?? [];
+expect('files with the same content accepted together, on every site', has($out, '2 other files to review have the same content')
+    && has($out, 'accepted: same content as wp-content/uploads/2026/09/thumb.php') && has($out, 'accepted: same content as ' . $thumbs[0])
+    && has($out, '3 files accepted, 0 no longer accepted')
+    && ($list['wp-content/uploads/sucuri/thumb.php']['hash'] ?? null) === hash_file('sha256', $thumbs[0])
+    && ($bobList['wp-content/uploads/thumb.php']['hash'] ?? null) === hash_file('sha256', $thumbs[0]), $out);
+array_map('unlink', $thumbs);
+wpsecmon('integrity', '--no-mail', '--site', ALICE, '--site', BOB);
 // photo.php.jpg: no longer accepted. sucuri-cmd.php: skip.
 [, $out] = wpsecmonWithInput("n\n\n", 'review', '--site', ALICE);
 expect('acceptance withdrawn', has($out, 'changed since') && has($out, 'no longer accepted') && has($out, '0 files accepted, 1 no longer accepted')

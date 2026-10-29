@@ -536,6 +536,10 @@ Options :
     'it changed since it was shown; its current version:' => 'il a changé depuis son affichage; sa version actuelle :',
     'accepted' => 'accepté',
     'accepted with the rest of its folder' => 'accepté avec le reste de son dossier',
+    'accepted: same content as %s' => 'accepté : même contenu que %s',
+    '%d other file to review has the same content: accepting this one accepts it too'
+        => ['%d autre fichier à examiner a le même contenu : accepter celui-ci l’accepte aussi',
+            '%d autres fichiers à examiner ont le même contenu : accepter celui-ci les accepte aussi'],
     'no longer accepted: it will be reported again' => 'n’est plus accepté : il sera de nouveau signalé',
     'cannot read it: %s' => 'lecture impossible : %s',
     'no longer there' => 'n’existe plus',

@@ -26,6 +26,10 @@ final class Review
     private $in;
     private int $accepted = 0;
     private int $withdrawn = 0;
+    /** @var array<string, string> content accepted once it was shown, on any site: hash => path. The files with the same content are accepted with it. */
+    private array $same = [];
+    /** @var array<string, int> files still to go through, by hash at the last check */
+    private array $left = [];
 
     /** @param resource $in where the answers come from */
     public function __construct(Context $ctx, $in)
@@ -48,6 +52,10 @@ final class Review
             $files = array_map('strval', array_keys($all ? $found : IntegrityCheck::pendingUploads($found, $accepted)));
             if ($files) {
                 $queue[] = [$site, $files, $found, $accepted];
+            }
+            foreach ($files as $rel) {
+                $hash = (string) ($found[$rel]['hash'] ?? '');
+                $this->left[$hash] = ($this->left[$hash] ?? 0) + 1;
             }
         }
         if (!$queue) {
@@ -78,6 +86,7 @@ final class Review
         $folder = null;
         foreach ($files as $i => $rel) {
             self::say(sprintf("\n[%d/%d] %s", $i + 1, count($files), Util::oneLine($rel)));
+            $this->left[(string) ($found[$rel]['hash'] ?? '')]--;
             $path = (string) ($found[$rel]['path'] ?? '');
             $file = $this->read($site, $path, self::PREVIEW_BYTES);
             if (is_string($file)) {
@@ -89,9 +98,23 @@ final class Review
                 self::say('  ' . I18n::t('accepted with the rest of its folder'));
                 continue;
             }
+            $hash = IntegrityCheck::fileHash($file);
+            if (isset($this->same[$hash])) {
+                // Relative to this site when it is one of its files, in full when it is another site's.
+                $from = $this->same[$hash];
+                $from = strpos($from, $site->root . '/') === 0 ? substr($from, strlen($site->root) + 1) : $from;
+                $this->decide($site, $rel, $file);
+                self::say('  ' . I18n::t('accepted: same content as %s', Util::oneLine($from)));
+                continue;
+            }
             $was = $accepted[$rel] ?? null;
             $this->about($file, $was);
             $this->content($file, false);
+            $others = $this->left[$hash] ?? 0;
+            if ($others > 0) {
+                self::say('  ' . I18n::n($others, '%d other file to review has the same content: accepting this one accepts it too',
+                    '%d other files to review have the same content: accepting this one accepts them too', $others));
+            }
             while (true) {
                 $answer = $this->ask(I18n::t('Accept this file? [y]es, [n]o, [a]ll of this folder, [c]at the whole file, [q]uit, Enter: skip'));
                 if ($answer === null || $answer === 'q') {
@@ -105,6 +128,8 @@ final class Review
                     $this->decide($site, $rel, $file);
                     self::say('  ' . I18n::t('accepted'));
                     $folder = $answer === 'a' ? dirname($rel) : $folder;
+                    // $file is what was shown last ("c" reads it again).
+                    $this->same[IntegrityCheck::fileHash($file)] = $path;
                 } elseif ($answer === 'n' && $was !== null) {
                     $this->decide($site, $rel, null);
                     self::say('  ' . I18n::t('no longer accepted: it will be reported again'));
