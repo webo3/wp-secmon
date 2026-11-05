@@ -2,7 +2,7 @@
 
 Read-only security monitoring for the WordPress sites of a server.
 
-wp-secmon finds every WordPress install on the server and checks each site on a schedule (systemd timers):
+wp-secmon finds every WordPress install on the server and checks each site on a schedule (a systemd timer):
 
 - new or deleted accounts and privilege changes;
 - tampered core and plugin files;
@@ -21,13 +21,15 @@ It works on cPanel/CloudLinux/Imunify360 servers and on plain LAMP/LEMP servers.
 
 ## Checks
 
-| Check | Timer | Detects |
+| Check | Default timer | Detects |
 |---|---|---|
 | `users` | hourly | Administrator accounts (`privileged_roles`) created, deleted, renamed or modified, e-mail changes on them, and accounts granted or losing privileges. Other accounts are ignored unless `users_alert_new = all`. Based on `wp user list`, normalized and checksummed; the diff runs only when the checksum changes. |
 | `integrity` | hourly | Changes to site URL, admin e-mail, registration and default role. Open registration with a powerful default role. Plugins and themes installed, removed, activated or deactivated. Changes to `wp-config.php`, `.htaccess`/`.user.ini`/`php.ini`, non-core PHP files in the site root and in `wp-content`, drop-ins and must-use plugins (sha256 baseline). For `wp-config.php`, the names of the constants that changed, never their values; the value of those in `wp_config_ignore_constants` may change unreported (default: `WP_TOOLKIT_API_TOKEN`, which WP Toolkit keeps renewing). Executable files in uploads (`.php`, `.phtml`, `x.php.jpg`...), except harmless PHP recognized by its content (see below) and files accepted with `wp-secmon review`. |
 | `checksums` | daily | `wp core verify-checksums` and `wp plugin verify-checksums --all`. Reports modified core files, extra files in `wp-admin` and `wp-includes`, and modified wordpress.org plugins. Deleting `readme.html`, `license.txt` or `wp-config-sample.php` (often done to hide the WordPress version) is not reported; modifying them is. |
 | `vulns` | daily | Known vulnerabilities in the installed core, plugin and theme versions ([wpvulnerability.net](https://www.wpvulnerability.net), free, no API key). Plugins and themes closed on wordpress.org. Core missing security releases. |
 | `discover` | daily | New or removed WordPress installs, and sites that cannot be monitored (for example, owned by root). |
+
+Each check has a `timer` setting in `wp-secmon.ini` that changes when it runs, or turns it off (see [Schedule](#schedule)).
 
 ### Severities
 
@@ -73,10 +75,10 @@ This does the following:
 
 - copies the phar to `/usr/local/bin/wp-secmon`;
 - creates `/etc/wp-secmon/wp-secmon.ini` and `/etc/wp-secmon/site-users.map`;
-- installs a logrotate rule, the `wp-secmon@.service` template and five timers, and enables the timers (add `--no-enable` to skip that);
+- installs a logrotate rule, the `wp-secmon@.service` template and `wp-secmon.timer`, which starts the checks every hour when they are due, and enables the timer (add `--no-enable` to skip that);
 - downloads WP-CLI to `/usr/local/bin/wp` (or `wp_cli`) when nothing is there, and checks it against the SHA-512 published by WP-CLI. If the download fails, the install goes on and tells you to install WP-CLI yourself.
 
-The timers run with the PHP binary that ran `install`, or the one given with `--php=PATH`. They pass `-d disable_functions=` so a hardened `php.ini` cannot disable `proc_open`.
+The checks run with the PHP binary that ran `install`, or the one given with `--php=PATH`. They pass `-d disable_functions=` so a hardened `php.ini` cannot disable `proc_open`.
 
 Then run:
 
@@ -89,7 +91,7 @@ wp-secmon all --no-mail         # records the baselines and prints the first rep
 **Upgrade:** `wp-secmon update` installs the latest release when it is newer, and `wp-secmon update --check` only tells you whether there is one (`wp-secmon doctor` also does). The update checks the phar against its published SHA-256, then runs the new phar's own `install` with the PHP binary of the timers. You can also upgrade by running the install command again. Either way:
 
 - your configuration is kept, and the new defaults are written to `*.dist` next to it;
-- timers stay enabled or disabled as they were, and only timers added by the new version are enabled;
+- `wp-secmon.timer` stays enabled or disabled as it was. Older versions had one timer per check (`wp-secmon-users.timer`...): they are replaced by `wp-secmon.timer`, and the checks then follow `timer` in `wp-secmon.ini`, so a check whose timer you had disabled runs again unless you set `timer = disabled`;
 - older versions installed the program in `/usr/local/sbin`: it moves to `/usr/local/bin`, and a symbolic link stays in its place, so your scripts keep working;
 - the upgrade refuses to run while a check is running, because replacing the phar would break it. Try again when the check has finished.
 
@@ -100,7 +102,7 @@ wp-secmon all --no-mail         # records the baselines and prints the first rep
 ```text
 wp-secmon [options] <command>
 
-  discover | users | integrity | checksums | vulns | all | sites | status | reset | doctor
+  discover | users | integrity | checksums | vulns | all | schedule | sites | status | reset | doctor
   review [--accepted]
   install [--php=PATH] [--no-enable] | update [--check] | uninstall [--purge]
 
@@ -118,15 +120,20 @@ wp-secmon [options] <command>
 
 **Rescanning one site:** `wp-secmon all --site /home/alice/public_html` examines that site again (after a change to `site-users.map`, for example) and runs every check on it, without searching the whole server. It reports only on that site. `wp-secmon discover --site PATH` only updates the site list. Either way, a site must already be in the list: run `wp-secmon discover` to find new ones.
 
-If the CLI `php.ini` disables `proc_open`, run manual commands as `php -d disable_functions= /usr/local/bin/wp-secmon <command>`. The timers already do this.
+If the CLI `php.ini` disables `proc_open`, run manual commands as `php -d disable_functions= /usr/local/bin/wp-secmon <command>`. The timer already does this.
 
-To change a schedule, use `systemctl edit wp-secmon-users.timer`. For example, to check accounts every 15 minutes:
+### Schedule
+
+Every hour, `wp-secmon.timer` runs `wp-secmon schedule`, which reads `/etc/wp-secmon/wp-secmon.ini` and starts the checks that are due. Each one runs as its own `wp-secmon@<check>.service`, so a long `checksums` run never delays the hourly checks. To change when a check runs, set `timer` in its section (`[discovery]`, `[users]`, `[integrity]`, `[checksums]` or `[vulns]`). The change applies at the next hour, without reinstalling:
 
 ```ini
-[Timer]
-OnCalendar=
-OnCalendar=*:0/15
+[checksums]
+timer = weekly
 ```
+
+`timer` is `hourly`, `daily`, `weekly` (on Sundays), `monthly` (on the 1st) or `disabled`. Daily, weekly and monthly runs start a few minutes after a fixed hour of the night, in the server's time zone: 02:00 for `discover`, 03:00 `checksums`, 04:00 `integrity`, 05:00 `users`, 06:00 `vulns`. A run missed while the server was down starts at the next hour. `disabled` only stops the scheduled runs: `wp-secmon all` and `wp-secmon checksums` still run the check. `wp-secmon doctor` shows when each check runs next.
+
+Without systemd, run `wp-secmon schedule` every hour from root's crontab: it then runs the checks that are due itself, one after the other, in one report.
 
 ### Running it as the account of a site
 
@@ -142,9 +149,9 @@ Run by an account other than root, wp-secmon:
 - checks only the sites in the account's home that belong to the account, as the account (`--site PATH` picks some of them);
 - keeps its own site list, baselines and reports in `~/.wp-secmon`, and prints the report instead of e-mailing it;
 - uses the default settings, since only root can read `/etc/wp-secmon/wp-secmon.ini`: add `--lang fr` for French, or `-c FILE` for a configuration of the account's own;
-- stays read-only, with the same guard around WP-CLI as the timers.
+- stays read-only, with the same guard around WP-CLI as the scheduled checks.
 
-It does not change what root reports. Its baselines are its own, so the account's first run records them, like the first run on the server, and the files the account accepts with `wp-secmon review` are still reported by the timers. Site code runs as the account, so a web shell can do anything the account can do, accept itself included: what root reports stays out of its reach. The account finds root's reports on its sites in `~/logs/wp-secmon`. To stop root from reporting a file, the server administrator runs `wp-secmon review --site PATH`.
+It does not change what root reports. Its baselines are its own, so the account's first run records them, like the first run on the server, and the files the account accepts with `wp-secmon review` are still reported by root's scheduled checks. Site code runs as the account, so a web shell can do anything the account can do, accept itself included: what root reports stays out of its reach. The account finds root's reports on its sites in `~/logs/wp-secmon`. To stop root from reporting a file, the server administrator runs `wp-secmon review --site PATH`.
 
 On CloudLinux, the account's shell runs in its CageFS, which must include `/usr/local/bin/wp-secmon` and WP-CLI.
 
@@ -154,6 +161,7 @@ Every setting is documented in [`resources/etc/wp-secmon.ini`](resources/etc/wp-
 
 - `language`: `en` (default) or `fr`. The reports, the e-mails and the command output are in this language; `--lang` overrides it for one command. After a change, open problems are reported once more, in the new language.
 - `scan_paths[]`: where to look for WordPress installs (default `/home`). Add `/var/www` or `/srv/www` on LEMP/LAMP servers.
+- `timer`, in the section of each check: when it runs (see [Schedule](#schedule)).
 - `alert_email`: default `root`. On cPanel, root's mail goes to the server contact address.
 - `alert_site_admins = yes`: send the report of each site to its WordPress administration e-mail address (Settings > General) instead of `alert_email`. An address with several sites gets one e-mail for all of them, and nothing about the other sites. `alert_site_admins_cc[]` adds a copy (Cc), for you or your team. `alert_email` still gets the notes about the monitoring itself, and the sites whose address is not known yet (the `integrity` check reads it) or is not a plain address. When a site changes its address, the report that says so goes to both the old and the new one.
 - `privileged_roles[]`: only these accounts are reported (default `administrator`, plus network super admins). Add `editor` or `shop_manager` if you consider them privileged.
@@ -217,10 +225,11 @@ On the file and process side:
 | `/usr/local/sbin/wp-secmon` | Symbolic link to it, on servers upgraded from an older version |
 | `/usr/local/bin/wp` | WP-CLI, when the installer downloaded it (root-owned, mode 0755) |
 | `/etc/wp-secmon/wp-secmon.ini`, `site-users.map` | Configuration (root-owned and not writable by others, or wp-secmon refuses to run) |
-| `/etc/systemd/system/wp-secmon@.service`, `wp-secmon-*.timer` | Service template and timers |
+| `/etc/systemd/system/wp-secmon.timer`, `wp-secmon.service`, `wp-secmon@.service` | Hourly timer, the service it runs (`wp-secmon schedule`) and the template that runs each check |
 | `/var/lib/wp-secmon/sites.json` | Discovered sites, skipped sites and the reason |
 | `/var/lib/wp-secmon/sites/<id>/` | Per-site baselines (`users.json`, `files.json`, `options.json`, `components.json`), executable files found in uploads and those accepted (`uploads-exec.json`, `uploads-accepted.json`), and open alerts |
 | `/var/lib/wp-secmon/cache/` | Vulnerability data and the WordPress release list |
+| `/var/lib/wp-secmon/schedule.json` | When each check was last started by `wp-secmon schedule` |
 | `/var/log/wp-secmon/alerts.log` | Every alert raised |
 | `/var/log/wp-secmon/last-report-*.txt` | Full details of the last report of each check (the e-mail is a summary) |
 | `/var/lib/wp-secmon/outbox/` | Logs waiting to be copied to the accounts |
@@ -238,7 +247,7 @@ build.php             builds dist/wp-secmon.phar (make build)
 src/                  the application (namespace WpSecMon)
 resources/etc/        default configuration, site-users.map, logrotate rule
 resources/lang/       translations
-resources/systemd/    service template and timers
+resources/systemd/    hourly timer and services
 resources/wordpress/  PHP passed to WP-CLI (read-only guard, inventory)
 tests/                unit and end-to-end tests
 ```

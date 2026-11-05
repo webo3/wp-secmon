@@ -1,11 +1,10 @@
 [Unit]
-Description=wp-secmon: WordPress account changes (hourly)
+Description=wp-secmon: start the checks that are due (hourly)
 
 [Timer]
 OnCalendar=*-*-* *:05:00
 RandomizedDelaySec=5min
 Persistent=true
-Unit=wp-secmon@users.service
 
 [Install]
 WantedBy=timers.target

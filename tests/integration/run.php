@@ -304,6 +304,23 @@ expect('open problems e-mailed again after reset', has($details, 'Plugin Contact
 expect('baselines kept: no user or file changes reported after reset', !has($details, '] users:') && !has($details, '] integrity:'), $details);
 expect('database and files untouched by reset', ($d = sameSnapshot($before, $after)) === '', $d);
 
+step('schedule');
+// No systemd here: wp-secmon schedule runs the checks that are due itself, as from cron.
+@unlink('/var/lib/wp-secmon/schedule.json');
+[$code, $out, $mail] = wpsecmon('schedule');
+$started = json_decode((string) @file_get_contents('/var/lib/wp-secmon/schedule.json'), true);
+expect('the first scheduled run only notes the time', $code === 0 && $mail === '' && !has($out, 'finished') && is_array($started) && count($started) === 5, $out);
+$ini = (string) file_get_contents('/etc/wp-secmon/wp-secmon.ini');
+file_put_contents('/etc/wp-secmon/wp-secmon.ini', $ini . "[checksums]\ntimer = disabled\n");
+file_put_contents('/var/lib/wp-secmon/schedule.json', json_encode(array_fill_keys(array_keys($started), 0)));
+[$code, $out] = wpsecmon('schedule');
+expect('scheduled run starts the checks that are due, in one report', $code === 0 && has($out, 'finished discover, users, integrity, vulns:'), $out);
+[$code, $out] = wpsecmon('schedule');
+expect('nothing is due right after', $code === 0 && !has($out, 'finished'), $out);
+[$code, $out] = wpsecmon('doctor');
+expect('doctor shows the schedule', has($out, 'checksums: disabled') && has($out, 'users: hourly, next run after '), $out);
+file_put_contents('/etc/wp-secmon/wp-secmon.ini', $ini);
+
 // ---------------------------------------------------------------------------
 step('attack alice');
 wp('alice', ALICE, ['user', 'create', 'hacker', 'hacker@evil.test', '--role=administrator', '--quiet']);

@@ -11,9 +11,10 @@ namespace WpSecMon;
  *   wp-secmon uninstall [--purge]
  *
  * Installing copies the phar to /usr/local/bin/wp-secmon, creates the
- * configuration (existing files are kept), installs the systemd timers and
- * downloads WP-CLI when wp_cli points to nothing. Running it again with a
- * newer phar upgrades in place (see also Updater).
+ * configuration (existing files are kept), installs the hourly systemd timer
+ * that starts the checks when they are due (see Schedule) and downloads WP-CLI
+ * when wp_cli points to nothing. Running it again with a newer phar upgrades
+ * in place (see also Updater).
  */
 final class Installer
 {
@@ -23,7 +24,8 @@ final class Installer
     public const OLD_BIN = '/usr/local/sbin/wp-secmon';
     public const CONF_DIR = '/etc/wp-secmon';
     private const UNIT_DIR = '/etc/systemd/system';
-    private const TIMERS = ['discover', 'users', 'integrity', 'checksums', 'vulns'];
+    /** wp-secmon-<check>.timer: one timer per check in older versions, replaced by wp-secmon.timer. */
+    private const OLD_TIMERS = ['discover', 'users', 'integrity', 'checksums', 'vulns'];
     private const WP_CLI_URL = 'https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar';
 
     private static function say(string $msg): void
@@ -77,6 +79,15 @@ final class Installer
     {
         $unit = @file_get_contents(self::UNIT_DIR . '/wp-secmon@.service');
         return $unit !== false && preg_match('/^ExecStart=(\S+)/m', $unit, $m) ? $m[1] : null;
+    }
+
+    /**
+     * systemctl, when the checks can run as units of wp-secmon@.service: as
+     * root, with systemd running and the units installed.
+     */
+    public static function checkUnits(): ?string
+    {
+        return Util::effectiveUid() === 0 && is_file(self::UNIT_DIR . '/wp-secmon@.service') ? self::systemd() : null;
     }
 
     public static function install(string $php, bool $enable, Config $cfg): int
@@ -168,37 +179,29 @@ final class Installer
 
         $systemctl = self::systemd();
         if ($systemctl === null) {
-            self::say('  ' . I18n::t('note: systemd not detected; schedule "%s <check>" with cron instead', self::BIN));
+            self::say('  ' . I18n::t('note: systemd not detected; run "%s schedule" every hour with cron instead', self::BIN));
         } else {
-            $units = ['wp-secmon@.service'];
-            foreach (self::TIMERS as $t) {
-                $units[] = "wp-secmon-$t.timer";
-            }
-            $new = [];
-            foreach ($units as $unit) {
-                if (!is_file(self::UNIT_DIR . "/$unit")) {
-                    $new[] = $unit;
-                }
+            $new = !is_file(self::UNIT_DIR . '/wp-secmon.timer');
+            foreach (['wp-secmon@.service', 'wp-secmon.service', 'wp-secmon.timer'] as $unit) {
                 $text = strtr((string) file_get_contents(Util::resource("systemd/$unit")), ['@PHP@' => $php, '@BIN@' => self::BIN]);
                 file_put_contents(self::UNIT_DIR . "/$unit", $text);
                 chmod(self::UNIT_DIR . "/$unit", 0644);
             }
+            // Older versions had a timer per check. wp-secmon.timer now starts them as set by "timer" in wp-secmon.ini.
+            $old = self::removeOldTimers($systemctl);
             self::run([$systemctl, 'daemon-reload']);
-            // Only new timers are enabled: an upgrade leaves the others enabled or disabled as they were.
-            $newTimers = array_values(array_filter(self::TIMERS, static function (string $t) use ($new): bool {
-                return in_array("wp-secmon-$t.timer", $new, true);
-            }));
-            if (count($newTimers) < count(self::TIMERS)) {
-                self::say('  ' . I18n::t('timers updated, still enabled or disabled as before'));
+            if ($old) {
+                self::say('  ' . I18n::t('replaced %s with wp-secmon.timer, which starts the checks as set by timer in %s',
+                    count($old) > 1 ? 'wp-secmon-{' . implode(',', $old) . '}.timer' : "wp-secmon-{$old[0]}.timer", self::CONF_DIR . '/wp-secmon.ini'));
             }
-            if ($newTimers && $enable) {
-                foreach ($newTimers as $t) {
-                    self::run([$systemctl, 'enable', '--now', "wp-secmon-$t.timer"]);
-                }
-                self::say('  ' . I18n::t('timers enabled: %s', count($newTimers) > 1
-                    ? 'wp-secmon-{' . implode(',', $newTimers) . '}.timer' : "wp-secmon-{$newTimers[0]}.timer"));
-            } elseif ($newTimers) {
-                self::say('  ' . I18n::t('timers installed, not enabled'));
+            // Only a new timer is enabled: an upgrade leaves it enabled or disabled as it was.
+            if ($new && $enable) {
+                self::run([$systemctl, 'enable', '--now', 'wp-secmon.timer']);
+                self::say('  ' . I18n::t('timer enabled: %s', 'wp-secmon.timer'));
+            } elseif ($new) {
+                self::say('  ' . I18n::t('timer installed, not enabled: %s', 'wp-secmon.timer'));
+            } else {
+                self::say('  ' . I18n::t('timer updated, still enabled or disabled as before: %s', 'wp-secmon.timer'));
             }
         }
 
@@ -213,16 +216,30 @@ final class Installer
         return 0;
     }
 
+    /** Disables and deletes the timers of older versions. @return string[] the checks whose timer was there */
+    private static function removeOldTimers(string $systemctl): array
+    {
+        $old = [];
+        foreach (self::OLD_TIMERS as $t) {
+            if (is_file(self::UNIT_DIR . "/wp-secmon-$t.timer")) {
+                Proc::capture([$systemctl, 'disable', '--now', "wp-secmon-$t.timer"], 60);
+                @unlink(self::UNIT_DIR . "/wp-secmon-$t.timer");
+                $old[] = $t;
+            }
+        }
+        return $old;
+    }
+
     public static function uninstall(Config $cfg, bool $purge): int
     {
         self::requireRoot();
         $systemctl = self::systemd();
         if ($systemctl !== null) {
-            foreach (self::TIMERS as $t) {
-                Proc::capture([$systemctl, 'disable', '--now', "wp-secmon-$t.timer"], 60);
-                @unlink(self::UNIT_DIR . "/wp-secmon-$t.timer");
+            Proc::capture([$systemctl, 'disable', '--now', 'wp-secmon.timer'], 60);
+            self::removeOldTimers($systemctl);
+            foreach (['wp-secmon.timer', 'wp-secmon.service', 'wp-secmon@.service'] as $unit) {
+                @unlink(self::UNIT_DIR . "/$unit");
             }
-            @unlink(self::UNIT_DIR . '/wp-secmon@.service');
             Proc::capture([$systemctl, 'daemon-reload'], 60);
         }
         @unlink('/etc/logrotate.d/wp-secmon');

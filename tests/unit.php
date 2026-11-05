@@ -19,6 +19,7 @@ use WpSecMon\Log;
 use WpSecMon\Report;
 use WpSecMon\Review;
 use WpSecMon\RunAs;
+use WpSecMon\Schedule;
 use WpSecMon\Sites;
 use WpSecMon\Updater;
 use WpSecMon\UserLogs;
@@ -626,7 +627,85 @@ try {
 } catch (RuntimeException $e) {
     ok('config rejects invalid choice', true);
 }
+
+// Timers: "timer" in the section of each check.
+$timers = static function (Config $cfg): array {
+    $out = [];
+    foreach (Schedule::CHECKS as $t) {
+        $out[$t] = $cfg->str("{$t}_timer");
+    }
+    return $out;
+};
+ok('timer defaults', $timers(Config::fromArray([])) === ['discover' => 'daily', 'users' => 'hourly', 'integrity' => 'hourly',
+    'checksums' => 'daily', 'vulns' => 'daily'], $timers(Config::fromArray([])));
+file_put_contents($ini, "[discovery]\ntimer = disabled\n[users]\ntimer = daily\n[checksums]\ntimer = weekly\n[vulns]\ntimer = monthly\n");
+ok('timer of each section', $timers(Config::load($ini)) === ['discover' => 'disabled', 'users' => 'daily', 'integrity' => 'hourly',
+    'checksums' => 'weekly', 'vulns' => 'monthly'], $timers(Config::load($ini)));
+foreach (["[general]\ntimer = daily\n", "timer = daily\n", "[users]\ntimer = sometimes\n", "[users]\ntimer = no\n"] as $bad) {
+    file_put_contents($ini, $bad);
+    try {
+        Config::load($ini);
+        ok('timer refused: ' . json_encode($bad), false);
+    } catch (RuntimeException $e) {
+        ok('timer refused: ' . json_encode($bad), strpos($e->getMessage(), $bad[0] === '[' && strpos($bad, 'general') === false
+            ? 'invalid value for users_timer' : 'timer belongs in [discovery], [users], [integrity], [checksums], [vulns]') !== false, $e->getMessage());
+    }
+}
 unlink($ini);
+
+// Slots of each timer, in the server's time zone (here a zone with daylight saving time).
+$zone = new DateTimeZone('America/Toronto');
+$at = static function (string $time) use ($zone): int {
+    return (new DateTimeImmutable($time, $zone))->getTimestamp();
+};
+$slots = static function (string $timer, int $hour, string $now) use ($zone, $at): array {
+    return array_map(static function (int $t) use ($zone): string {
+        return (new DateTimeImmutable('@' . $t))->setTimezone($zone)->format('D Y-m-d H:i');
+    }, Schedule::slots($timer, $hour, $at($now), $zone));
+};
+ok('hourly slots', $slots('hourly', 3, '2026-11-04 10:30') === ['Wed 2026-11-04 10:00', 'Wed 2026-11-04 11:00'], $slots('hourly', 3, '2026-11-04 10:30'));
+ok('hourly slot on the hour', $slots('hourly', 3, '2026-11-04 10:00') === ['Wed 2026-11-04 10:00', 'Wed 2026-11-04 11:00']);
+ok('daily slots before the hour', $slots('daily', 3, '2026-11-04 02:30') === ['Tue 2026-11-03 03:00', 'Wed 2026-11-04 03:00'], $slots('daily', 3, '2026-11-04 02:30'));
+ok('daily slots after the hour', $slots('daily', 3, '2026-11-04 03:05') === ['Wed 2026-11-04 03:00', 'Thu 2026-11-05 03:00']);
+ok('weekly slots', $slots('weekly', 3, '2026-11-04 12:00') === ['Sun 2026-11-01 03:00', 'Sun 2026-11-08 03:00'], $slots('weekly', 3, '2026-11-04 12:00'));
+ok('weekly slots on Sunday before the hour', $slots('weekly', 3, '2026-11-08 02:00') === ['Sun 2026-11-01 03:00', 'Sun 2026-11-08 03:00']);
+ok('weekly slots on Sunday after the hour', $slots('weekly', 3, '2026-11-08 03:10') === ['Sun 2026-11-08 03:00', 'Sun 2026-11-15 03:00']);
+ok('monthly slots', $slots('monthly', 6, '2026-11-05 12:00') === ['Sun 2026-11-01 06:00', 'Tue 2026-12-01 06:00'], $slots('monthly', 6, '2026-11-05 12:00'));
+ok('monthly slots on the 1st before the hour', $slots('monthly', 6, '2026-11-01 05:00') === ['Thu 2026-10-01 06:00', 'Sun 2026-11-01 06:00']);
+ok('monthly slots across the year', $slots('monthly', 6, '2027-01-01 05:00') === ['Tue 2026-12-01 06:00', 'Fri 2027-01-01 06:00']);
+ok('daily slots across daylight saving time', $slots('daily', 3, '2026-11-01 12:00') === ['Sun 2026-11-01 03:00', 'Mon 2026-11-02 03:00']
+    && Schedule::slots('daily', 3, $at('2026-11-01 12:00'), $zone)[1] - Schedule::slots('daily', 3, $at('2026-11-01 12:00'), $zone)[0] === 86400
+    && Schedule::slots('daily', 3, $at('2026-11-01 02:00'), $zone)[1] - Schedule::slots('daily', 3, $at('2026-11-01 02:00'), $zone)[0] === 90000);
+ok('the server time zone is known', Schedule::zone() instanceof DateTimeZone);
+
+// Which checks are due.
+$state = sys_get_temp_dir() . '/wpm-schedule-' . getmypid();
+$cfg = Config::fromArray(['state_dir' => $state, 'checksums_timer' => 'weekly', 'vulns_timer' => 'disabled']);
+$schedule = new Schedule($cfg, $zone);
+ok('nothing due on the first run', $schedule->due($at('2026-11-04 10:07')) === [] && is_file("$state/schedule.json"));
+ok('first run noted for every check', count((array) json_decode((string) file_get_contents("$state/schedule.json"), true)) === 5);
+ok('hourly checks wait for the next hour', $schedule->due($at('2026-11-04 10:59')) === []);
+ok('hourly checks due the next hour', $schedule->due($at('2026-11-04 11:06')) === ['users', 'integrity'], $schedule->due($at('2026-11-04 11:06')));
+$schedule->started(['users', 'integrity'], $at('2026-11-04 11:06'));
+ok('started checks are not due again', (new Schedule($cfg, $zone))->due($at('2026-11-04 11:40')) === []);
+$schedule = new Schedule($cfg, $zone);
+ok('daily discovery due after 02:00', $schedule->due($at('2026-11-05 02:06')) === ['discover', 'users', 'integrity'], $schedule->due($at('2026-11-05 02:06')));
+$schedule->started(['discover', 'users', 'integrity'], $at('2026-11-05 02:06'));
+ok('weekly checksums due on Sunday after 03:00', $schedule->due($at('2026-11-08 03:06')) === ['discover', 'users', 'integrity', 'checksums'],
+    $schedule->due($at('2026-11-08 03:06')));
+ok('disabled check never due', !in_array('vulns', $schedule->due($at('2027-06-01 12:00')), true));
+ok('next run', $schedule->format((int) $schedule->next('checksums', $at('2026-11-05 12:00'))) === '2026-11-08 03:00'
+    && $schedule->next('users', $at('2026-11-05 12:00')) === $at('2026-11-05 12:00') && $schedule->next('vulns', $at('2026-11-05 12:00')) === null);
+ok('timers in words', Schedule::describe('checksums', 'weekly') === 'weekly on Sundays at 03:00' && Schedule::describe('users', 'hourly') === 'hourly'
+    && Schedule::describe('vulns', 'disabled') === 'disabled' && Schedule::describe('discover', 'monthly') === 'monthly on the 1st at 02:00');
+Util::rmTree($state);
+
+// The checks run the discovery first when the site list is older than the discovery timer (plus 2 hours).
+ok('site list max age', Sites::maxAgeHours(Config::fromArray([])) === 26 && Sites::maxAgeHours(Config::fromArray(['discover_timer' => 'hourly'])) === 3
+    && Sites::maxAgeHours(Config::fromArray(['discover_timer' => 'weekly'])) === 170
+    && Sites::maxAgeHours(Config::fromArray(['discover_timer' => 'monthly'])) === 746);
+ok('site list never too old with discovery disabled', Sites::maxAgeHours(Config::fromArray(['discover_timer' => 'disabled'])) === null);
+ok('discovery_max_age_hours wins', Sites::maxAgeHours(Config::fromArray(['discover_timer' => 'disabled', 'discovery_max_age_hours' => 48])) === 48);
 ok('user_log_dir default', Config::fromArray([])->str('user_log_dir') === 'logs/wp-secmon'
     && Config::fromArray(['user_log_dir' => ''])->str('user_log_dir') === '' && Config::fromArray(['user_log_dir' => 'wp-secmon-log'])->str('user_log_dir') === 'wp-secmon-log');
 foreach (['/var/log/x', 'logs/../../etc', './logs', 'logs/', 'logs//x', 'my logs'] as $bad) {

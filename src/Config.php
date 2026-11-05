@@ -36,7 +36,8 @@ final class Config
         ],
         'extra_sites' => [],
         'exclude_sites' => [],
-        'discovery_max_age_hours' => 26,
+        // 0: 2 hours more than the discovery timer (see Sites::maxAgeHours)
+        'discovery_max_age_hours' => 0,
 
         // Which account each site is checked as
         'site_users_map' => '/etc/wp-secmon/site-users.map',
@@ -93,6 +94,24 @@ final class Config
 
         // wp-secmon update
         'update_url' => 'https://api.github.com/repos/webo3/wp-secmon/releases/latest',
+
+        // When each check runs: "timer" in its section (see TIMER_SECTIONS and Schedule)
+        'discover_timer' => 'daily',
+        'users_timer' => 'hourly',
+        'integrity_timer' => 'hourly',
+        'checksums_timer' => 'daily',
+        'vulns_timer' => 'daily',
+    ];
+
+    public const TIMERS = ['hourly', 'daily', 'weekly', 'monthly', 'disabled'];
+
+    /** The section whose "timer" sets the timer of each check: [discovery] timer = daily is discover_timer. */
+    public const TIMER_SECTIONS = [
+        'discovery' => 'discover',
+        'users' => 'users',
+        'integrity' => 'integrity',
+        'checksums' => 'checksums',
+        'vulns' => 'vulns',
     ];
 
     private const CHOICES = [
@@ -102,6 +121,11 @@ final class Config
         'mail_format' => ['html', 'text'],
         'users_alert_new' => ['all', 'privileged'],
         'users_new_severity' => ['info', 'warning', 'critical'],
+        'discover_timer' => self::TIMERS,
+        'users_timer' => self::TIMERS,
+        'integrity_timer' => self::TIMERS,
+        'checksums_timer' => self::TIMERS,
+        'vulns_timer' => self::TIMERS,
     ];
 
     private array $values;
@@ -141,13 +165,25 @@ final class Config
             if (is_array($value) && !array_key_exists($key, self::DEFAULTS)) {
                 // [section]
                 foreach ($value as $k => $v) {
-                    self::set($values, (string) $k, $v, $file);
+                    self::set($values, self::sectionKey((string) $key, (string) $k, $file), $v, $file);
                 }
             } else {
-                self::set($values, (string) $key, $value, $file);
+                self::set($values, self::sectionKey('', (string) $key, $file), $value, $file);
             }
         }
         return new self($values, $file);
+    }
+
+    /** The setting a key of [$section] stands for: keys are global, except "timer", which is the timer of the section's check. */
+    private static function sectionKey(string $section, string $key, string $file): string
+    {
+        if ($key !== 'timer') {
+            return $key;
+        }
+        if (!isset(self::TIMER_SECTIONS[$section])) {
+            throw new \RuntimeException(I18n::t('%s: timer belongs in %s', $file, '[' . implode('], [', array_keys(self::TIMER_SECTIONS)) . ']'));
+        }
+        return self::TIMER_SECTIONS[$section] . '_timer';
     }
 
     private static function set(array &$values, string $key, $value, string $file): void

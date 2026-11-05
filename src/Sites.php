@@ -40,6 +40,20 @@ final class Sites
     }
 
     /**
+     * Hours after which the checks run the discovery first: discovery_max_age_hours,
+     * or 2 hours more than the discovery timer. Null when the discovery timer is
+     * disabled: the list then changes only with `wp-secmon discover`.
+     */
+    public static function maxAgeHours(Config $cfg): ?int
+    {
+        if ($cfg->int('discovery_max_age_hours') > 0) {
+            return $cfg->int('discovery_max_age_hours');
+        }
+        $interval = ['hourly' => 1, 'daily' => 24, 'weekly' => 7 * 24, 'monthly' => 31 * 24][$cfg->str('discover_timer')] ?? null;
+        return $interval !== null ? $interval + 2 : null;
+    }
+
+    /**
      * Sites to check. Runs discovery first when the registry is missing or
      * stale. $only restricts to the given roots (resolved on the fly if needed).
      * @return Site[]
@@ -47,7 +61,8 @@ final class Sites
     public function load(array $only = []): array
     {
         $reg = $this->registry();
-        if ($reg === null || time() - (int) ($reg['generated'] ?? 0) > $this->cfg->int('discovery_max_age_hours') * 3600) {
+        $maxAge = self::maxAgeHours($this->cfg);
+        if ($reg === null || ($maxAge !== null && time() - (int) ($reg['generated'] ?? 0) > $maxAge * 3600)) {
             $reg = $this->discover();
         }
         $sites = [];

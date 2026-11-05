@@ -145,12 +145,24 @@ final class Doctor
             $this->line('ok', I18n::t('wp-secmon %s is up to date', VERSION));
         }
 
+        fwrite(STDOUT, "\n" . I18n::t('Schedule') . "\n");
         $systemctl = Util::which('systemctl');
         if ($systemctl !== null) {
-            fwrite(STDOUT, "\n" . I18n::t('Timers') . "\n");
-            foreach (['discover', 'users', 'integrity', 'checksums', 'vulns'] as $t) {
-                [$code, $out] = Proc::capture([$systemctl, 'is-active', "wp-secmon-$t.timer"], 10);
-                $this->line($code === 0 ? 'ok' : 'warn', "wp-secmon-$t.timer: " . trim($out));
+            [$code, $out] = Proc::capture([$systemctl, 'is-active', 'wp-secmon.timer'], 10);
+            $this->line($code === 0 ? 'ok' : 'warn', $code === 0 ? I18n::t('wp-secmon.timer: %s, starts the checks that are due every hour', trim($out))
+                : I18n::t('wp-secmon.timer: %s, the checks do not run on their own', trim($out)));
+        }
+        $schedule = new Schedule($this->cfg);
+        $now = time();
+        foreach (Schedule::CHECKS as $check) {
+            $when = Schedule::describe($check, $this->cfg->str("{$check}_timer"));
+            $next = $schedule->next($check, $now);
+            if ($next === null) {
+                $this->line('ok', I18n::t('%s: %s', $check, $when));
+            } elseif ($next <= $now) {
+                $this->line('ok', I18n::t('%s: %s, due at the next hourly run', $check, $when));
+            } else {
+                $this->line('ok', I18n::t('%s: %s, next run after %s', $check, $when, $schedule->format($next)));
             }
         }
 

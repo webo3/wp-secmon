@@ -1,0 +1,14 @@
+[Unit]
+Description=wp-secmon: start the checks that are due (timer in /etc/wp-secmon/wp-secmon.ini)
+
+[Service]
+Type=oneshot
+ExecStart=@PHP@ -d disable_functions= -d open_basedir= @BIN@ schedule
+# Reads the configuration, notes when each check starts and starts the checks
+# that are due as wp-secmon@<check>.service, which runs them in its sandbox.
+# The discovery runs first, so this waits for it.
+TimeoutStartSec=6h
+NoNewPrivileges=yes
+ProtectSystem=full
+ProtectHome=read-only
+PrivateTmp=yes

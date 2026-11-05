@@ -50,6 +50,8 @@ Commands:
   checksums   Core and wordpress.org plugin files against official checksums
   vulns       Known vulnerabilities, closed plugins, outdated core
   all         discover + users + integrity + checksums + vulns
+  schedule    Start the checks that are due, as set by "timer" in
+              wp-secmon.ini (the systemd timer runs it every hour)
   sites       List the discovered sites with their address, administration
               e-mail and the account each one is checked as (runs discovery
               first when there is no site list yet)
@@ -212,7 +214,9 @@ TXT);
             case 'integrity':
             case 'checksums':
             case 'vulns':
-                return $this->runChecks($command);
+                return $this->runChecks($command === 'all' ? array_merge(['discover'], array_keys(self::CHECKS)) : [$command]);
+            case 'schedule':
+                return $this->schedule();
             case 'sites':
                 return $this->sites();
             case 'status':
@@ -249,7 +253,9 @@ TXT);
         Util::mkdir($this->cfg->str('state_dir'));
         Util::mkdir($this->cfg->str('state_dir') . '/locks');
         Util::mkdir($this->cfg->str('log_dir'), 0750);
-        $this->tmp = Util::tempDir();
+        if ($this->tmp === '') {
+            $this->tmp = Util::tempDir();
+        }
     }
 
     /** Non-blocking lock per check; the descriptor is close-on-exec so site processes never inherit it. */
@@ -262,12 +268,12 @@ TXT);
         return $fh;
     }
 
-    /** Locks every check, so that none runs meanwhile. Fails when one is running. */
+    /** Locks every check, and the schedule that starts them, so that none runs meanwhile. Fails when one is running. */
     private function lockAll(): array
     {
         $locks = [];
         try {
-            foreach (array_merge(['discover'], array_keys(self::CHECKS)) as $name) {
+            foreach (array_merge(['discover'], array_keys(self::CHECKS), ['schedule']) as $name) {
                 $lock = $this->lock($name);
                 if ($lock === null) {
                     throw new \RuntimeException(I18n::t("a '%s' run is in progress; try again when it has finished", $name));
@@ -310,7 +316,8 @@ TXT);
         }
     }
 
-    private function runChecks(string $command): int
+    /** Runs $names (discover and checks, in this order), with one report for all of them. */
+    private function runChecks(array $names): int
     {
         $this->init();
         $alerts = new Alerts($this->cfg);
@@ -318,7 +325,6 @@ TXT);
         $alerts->print = $this->print;
         $sites = new Sites($this->cfg, $alerts);
 
-        $names = $command === 'all' ? array_merge(['discover'], array_keys(self::CHECKS)) : [$command];
         $ctx = null;
         $list = null;
         $status = 0;
@@ -363,6 +369,56 @@ TXT);
         return $status;
     }
 
+    /**
+     * Starts the checks that are due (see Schedule). Under systemd, each one
+     * runs as its own wp-secmon@<check>.service, side by side, so a long
+     * check never delays the others. Otherwise (cron, or an account running
+     * wp-secmon itself) they run here, one after the other, in one report.
+     */
+    private function schedule(): int
+    {
+        if ($this->only) {
+            throw new \InvalidArgumentException(I18n::t('schedule checks every site: --site cannot be used with it'));
+        }
+        $this->init();
+        $lock = $this->lock('schedule');
+        if ($lock === null) {
+            Log::warning(I18n::t("another '%s' run is in progress, skipped", 'schedule'));
+            return 75;
+        }
+        try {
+            $schedule = new Schedule($this->cfg);
+            $now = time();
+            $due = $schedule->due($now);
+            if (!$due) {
+                Log::debug('no check is due');
+                return 0;
+            }
+            $systemctl = Installer::checkUnits();
+            if ($systemctl === null) {
+                $schedule->started($due, $now);
+                return $this->runChecks($due);
+            }
+            $status = 0;
+            foreach ($due as $name) {
+                $unit = "wp-secmon@$name.service";
+                // The discovery first, until it ends: the checks then use the new site list.
+                $wait = $name === 'discover';
+                $schedule->started([$name], $now);
+                Log::info(I18n::t('starting %s', $unit));
+                [$code, , $err] = Proc::capture($wait ? [$systemctl, 'start', $unit] : [$systemctl, 'start', '--no-block', $unit], $wait ? 6 * 3600 : 60);
+                if ($code !== 0) {
+                    Log::error(I18n::t('%s failed: %s', "systemctl start $unit", Util::oneLine($err)));
+                    $status = 1;
+                }
+            }
+            return $status;
+        } finally {
+            flock($lock, LOCK_UN);
+            fclose($lock);
+        }
+    }
+
     /** Copies the queued logs of each account to its home, as that account (see UserLogs). Never fails the run. */
     private function publishLogs(): void
     {
@@ -382,7 +438,7 @@ TXT);
             // usual, but not printed: the list below shows the same sites.
             Log::info(I18n::t('no site list yet: discovering the WordPress installs first'));
             $this->print = false;
-            $status = $this->runChecks('discover');
+            $status = $this->runChecks(['discover']);
             $reg = $sites->registry();
             if ($reg === null) {
                 return $status !== 0 ? $status : 1;

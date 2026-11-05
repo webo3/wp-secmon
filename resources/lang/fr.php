@@ -370,6 +370,7 @@ return [
     'syntax error' => 'erreur de syntaxe',
     "%s: unknown setting '%s' ignored" => '%s : réglage inconnu « %s » ignoré',
     '%s: invalid value for %s (expected %s)' => '%s : valeur invalide pour %s (attendu : %s)',
+    '%s: timer belongs in %s' => '%s : timer se met dans %s',
     'cannot create directory %s' => 'impossible de créer le dossier %s',
     'a directory relative to the home, such as logs/wp-secmon' => 'un dossier relatif au dossier personnel, comme logs/wp-secmon',
     '%s must be owned by root and not group/world writable (uid %d, mode %o)'
@@ -392,6 +393,8 @@ Commands:
   checksums   Core and wordpress.org plugin files against official checksums
   vulns       Known vulnerabilities, closed plugins, outdated core
   all         discover + users + integrity + checksums + vulns
+  schedule    Start the checks that are due, as set by "timer" in
+              wp-secmon.ini (the systemd timer runs it every hour)
   sites       List the discovered sites with their address, administration
               e-mail and the account each one is checked as (runs discovery
               first when there is no site list yet)
@@ -448,6 +451,8 @@ Commandes :
               aux sommes de contrôle officielles
   vulns       Vulnérabilités connues, extensions retirées, WordPress périmé
   all         discover + users + integrity + checksums + vulns
+  schedule    Lancer les vérifications prévues, selon « timer » dans
+              wp-secmon.ini (le timer systemd le lance toutes les heures)
   sites       Lister les sites découverts avec leur adresse, leur courriel
               d’administration et le compte utilisé pour chacun (lance
               d’abord la découverte s’il n’y a pas encore de liste)
@@ -617,7 +622,18 @@ Options :
     '%s reachable' => '%s accessible',
     '%s unreachable (outdated core not reported)' => '%s inaccessible (versions de WordPress périmées non signalées)',
     '%s unreachable (vulnerabilities not reported)' => '%s inaccessible (vulnérabilités non signalées)',
-    'Timers' => 'Timers systemd',
+    'Schedule' => 'Planification',
+    'wp-secmon.timer: %s, starts the checks that are due every hour'
+        => 'wp-secmon.timer : %s, lance les vérifications prévues toutes les heures',
+    'wp-secmon.timer: %s, the checks do not run on their own'
+        => 'wp-secmon.timer : %s, les vérifications ne se lancent pas d’elles-mêmes',
+    '%s: %s, due at the next hourly run' => '%s : %s, prévue au prochain passage horaire',
+    '%s: %s, next run after %s' => '%s : %s, prochaine exécution après %s',
+    'hourly' => 'toutes les heures',
+    'daily at %s' => 'tous les jours à %s',
+    'weekly on Sundays at %s' => 'tous les dimanches à %s',
+    'monthly on the 1st at %s' => 'le 1er de chaque mois à %s',
+    'disabled' => 'désactivée',
     'Sites' => 'Sites',
     "no site list yet: run 'wp-secmon discover'" => 'pas encore de liste de sites : lancez « wp-secmon discover »',
     '%d monitored, %d skipped (see wp-secmon sites)' => '%d surveillé(s), %d ignoré(s) (voir wp-secmon sites)',
@@ -640,10 +656,15 @@ Options :
     'cannot write %s' => 'impossible d’écrire %s',
     'kept %s (current defaults in %s)' => '%s conservé (valeurs par défaut actuelles dans %s)',
     'created %s' => '%s créé',
-    'note: systemd not detected; schedule "%s <check>" with cron instead' => 'note : systemd non détecté; planifiez « %s <vérification> » avec cron à la place',
-    'timers enabled: %s' => 'timers activés : %s',
-    'timers installed, not enabled' => 'timers installés, non activés',
-    'timers updated, still enabled or disabled as before' => 'timers mis à jour, toujours activés ou désactivés comme avant',
+    'note: systemd not detected; run "%s schedule" every hour with cron instead'
+        => 'note : systemd non détecté; lancez « %s schedule » toutes les heures avec cron à la place',
+    'replaced %s with wp-secmon.timer, which starts the checks as set by timer in %s'
+        => '%s remplacés par wp-secmon.timer, qui lance les vérifications selon timer dans %s',
+    'timer enabled: %s' => 'timer activé : %s',
+    'timer installed, not enabled: %s' => 'timer installé, non activé : %s',
+    'timer updated, still enabled or disabled as before: %s' => 'timer mis à jour, toujours activé ou désactivé comme avant : %s',
+    'schedule checks every site: --site cannot be used with it' => 'schedule vérifie tous les sites : --site ne peut pas l’accompagner',
+    'starting %s' => 'lancement de %s',
     'WP-CLI: %s (downloaded)' => 'WP-CLI : %s (téléchargé)',
     'note: WP-CLI not installed (%s); install it at %s or set wp_cli in %s'
         => 'note : WP-CLI non installé (%s); installez-le à %s ou réglez wp_cli dans %s',
